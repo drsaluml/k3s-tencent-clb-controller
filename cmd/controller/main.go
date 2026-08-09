@@ -49,6 +49,9 @@ func run() error {
 		excludedNodeLabels string
 		apiQPS             float64
 		nodeCacheTTL       time.Duration
+		orphanInterval     time.Duration
+		orphanGrace        time.Duration
+		orphanDelete       bool
 	)
 
 	// ค่าสามตัวนี้ต่างกันทุกคลัสเตอร์ จึงรับผ่าน env ได้ด้วย (flag ชนะถ้าระบุทั้งคู่)
@@ -70,6 +73,12 @@ func run() error {
 	flag.IntVar(&maxConcurrent, "concurrent-service-syncs", 2, "")
 	flag.Float64Var(&apiQPS, "cloud-api-qps", 10, "client-side rate limit for Tencent Cloud API calls")
 	flag.DurationVar(&nodeCacheTTL, "node-cache-ttl", time.Hour, "how long a node→CVM instance mapping stays cached")
+
+	flag.DurationVar(&orphanInterval, "orphan-gc-interval", time.Hour, "how often to look for CLBs whose Service is gone; 0 disables")
+	flag.DurationVar(&orphanGrace, "orphan-gc-grace-period", 30*time.Minute, "how long a CLB must look orphaned before it is eligible for deletion")
+	// ค่าเริ่มต้นคือรายงานอย่างเดียว การลบ cloud resource อัตโนมัติต้องเป็นการตัดสินใจ
+	// ที่มีคนกดเอง ไม่ใช่สิ่งที่ได้มาฟรีจากการอัปเกรดเวอร์ชัน
+	flag.BoolVar(&orphanDelete, "orphan-gc-delete", false, "actually delete orphaned CLBs instead of only logging them")
 
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -139,6 +148,21 @@ func run() error {
 	}
 	if err := reconciler.SetupWithManager(mgr, maxConcurrent); err != nil {
 		return fmt.Errorf("setting up service controller: %w", err)
+	}
+
+	if orphanInterval > 0 {
+		// GetAPIReader ไม่ผ่าน cache — จำเป็น เพราะ cache ที่ยัง sync ไม่เสร็จ
+		// จะทำให้ Service ทุกตัวดูเหมือนหายไป แล้ว GC ลบ CLB ทิ้งทั้งคลัสเตอร์
+		if err := mgr.Add(&controller.OrphanCollector{
+			CLB:         clbClient,
+			Config:      &cfg,
+			Reader:      mgr.GetAPIReader(),
+			Interval:    orphanInterval,
+			GracePeriod: orphanGrace,
+			Delete:      orphanDelete,
+		}); err != nil {
+			return fmt.Errorf("setting up orphan collector: %w", err)
+		}
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

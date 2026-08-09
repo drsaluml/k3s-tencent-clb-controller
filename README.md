@@ -42,6 +42,33 @@ routing เอง ไม่ทำ L7 ซ้ำบน CLB
 resync ทุก `--resync-period` (default 10 นาที) เพื่อดึง drift ที่เกิดนอก k8s กลับมา
 เช่นมีคนไปลบ listener ทิ้งบน console
 
+### Orphan GC
+
+CLB จะกลายเป็น orphan เมื่อ Service หายไปโดยที่ finalizer ไม่ได้ทำงาน — ลบตอน
+controller ดับ, ลบทั้ง namespace จน finalizer ถูก force ทิ้ง, หรือ `DeleteLoadBalancer`
+ล้มเหลวแล้วไม่มีใครกลับมาดู ทุกเคสจบเหมือนกันคือ CLB ที่ไม่มีใครใช้แต่ยังคิดเงิน
+
+ตัวเก็บกวาดเดินทุก `--orphan-gc-interval` (default 1 ชั่วโมง) เทียบ CLB ที่ติด tag
+ของคลัสเตอร์นี้กับ Service ที่มีอยู่จริง
+
+```
+--orphan-gc-interval      1h     รอบการตรวจ, 0 = ปิด
+--orphan-gc-grace-period  30m    ต้องดูเหมือน orphan ติดต่อกันเท่านี้ก่อนถึงจะลบได้
+--orphan-gc-delete        false  ค่าเริ่มต้นคือรายงานลง log อย่างเดียว
+```
+
+**ค่าเริ่มต้นไม่ลบอะไรทั้งนั้น** — มันบอกว่าเจออะไรบ้างใน log แล้วให้คนตัดสินใจ
+การได้ตัวลบ cloud resource อัตโนมัติมาฟรีจากการอัปเกรดเวอร์ชันไม่ใช่เรื่องที่ควรเกิด
+เปิด `--orphan-gc-delete` เมื่อเชื่อรายงานแล้ว
+
+กันพลาดไว้สี่ชั้น: อ่าน Service ตรงจาก apiserver ไม่ผ่าน cache (cache ที่ sync
+ไม่เสร็จจะทำให้ Service ทุกตัวดูเหมือนหายไป), error ใดๆ ยกเลิกทั้งรอบโดยไม่ลบอะไรเลย,
+ต้องเห็นเป็น orphan ติดต่อกันจนพ้น grace period, และกรองด้วย `k8s-cluster-id`
+เสมอจึงไม่แตะ CLB ของคลัสเตอร์อื่นใน account เดียวกัน
+
+> CLB ที่ adopt มาด้วย `existing-loadbalancer-id` ไม่เคยถูกติด tag ของเรา
+> GC จึงมองไม่เห็นตั้งแต่แรก
+
 ## ตัวอย่าง Service
 
 ```yaml
@@ -80,9 +107,9 @@ protection (เปิดเป็นค่าเริ่มต้น), security
 ที่ไม่มี VIP, resolve node → CVM พร้อม cache, rate limit + รอ async task,
 leader election / healthz / metrics, CAM policy สำเร็จรูป, CI + release ขึ้น GHCR
 
-**ยังไม่ทำ** — Orphan GC (CLB ที่หลุดต้องตามลบเอง), metric ของ CLB API, Helm chart,
-derive `--cluster-id` อัตโนมัติ, CVM instance role (ยังใช้ static key), e2e test
-ที่ยิง API จริง (test ทั้งหมดใช้ in-memory fake)
+**ยังไม่ทำ** — metric ของ CLB API, Helm chart, derive `--cluster-id` อัตโนมัติ,
+CVM instance role (ยังใช้ static key), e2e test ที่ยิง API จริง (test ทั้งหมดใช้
+in-memory fake)
 
 **ยืนยันกับ API จริงแล้วแค่ไหน** (k3s v1.36.2, ap-bangkok) — แยกออกมาเพราะ
 "โค้ดเขียนแล้ว" กับ "รู้ว่าใช้ได้จริง" ไม่ใช่เรื่องเดียวกัน
@@ -97,7 +124,16 @@ derive `--cluster-id` อัตโนมัติ, CVM instance role (ยัง�
 | `ModifyLoadBalancerAttributes` | ผ่าน — delete protection กับ pass-to-target ติดจริง |
 | `SetLoadBalancerSecurityGroups` | ผ่าน — ผูกแล้วกรอง traffic จริง |
 | ลบ CLB ตอนลบ Service | ผ่าน — ปิด protection เอง ลบ CLB แล้วปล่อย finalizer ใน 11 วินาที |
+| CLB แบบ `INTERNAL` | ผ่าน — ได้ VIP ในซับเน็ตของ node (ต่างจาก OPEN ที่ได้ domain) |
+| listener UDP | ผ่านหลังแก้ `DeregisterTargetRst` (ดูด้านล่าง) |
+| `IPV6FullChain` | **บัญชีนี้ไม่รองรับ** — `Uin ... do not support create IPv6 full chain loadbalancer` ต้องขอเปิดกับ Tencent |
 | CAM deny policy กันแก้จาก console | **ยังไม่ยืนยัน** — ต้องลองด้วย user จริง |
+
+> **UDP ห้ามส่ง `DeregisterTargetRst`** — Tencent นับ flag นี้บน UDP เป็นฟีเจอร์
+> 重调度 ที่บัญชีต้องได้สิทธิ์ก่อน ส่งไปแล้วได้ `FailedOperation: Uin does not
+> support reschedule function.` แล้ว listener สร้างไม่ได้เลย ทั้งที่ CLB ถูกสร้าง
+> ไปแล้วและคิดเงินต่อ ตัว flag เองก็ไม่มีความหมายกับ UDP อยู่แล้วเพราะไม่มี
+> connection ให้ RST — controller จึงส่งเฉพาะ listener TCP
 
 > **CLB บางภูมิภาคเป็น DNS ไม่ใช่ IP** — `ap-bangkok` คืน `LoadBalancerVips: []`
 > แต่ให้ `Domain` มาแทน controller จึงเขียนลง `ingress[0].hostname` ไม่ใช่ `.ip`

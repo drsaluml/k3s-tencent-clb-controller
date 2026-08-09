@@ -252,7 +252,12 @@ func parseListeners(svc *corev1.Service, a map[string]string) ([]clb.ListenerSpe
 			HealthCheck: hc,
 			// ตัด connection ทันทีที่ deregister — ไม่งั้น node ที่ drain ไปแล้ว
 			// ยังรับ traffic ค้างอยู่จนกว่า connection จะหมดอายุเอง
-			DeregisterRT: true,
+			//
+			// เฉพาะ TCP เท่านั้น UDP ไม่มี connection ให้ RST ตั้งแต่แรก และ Tencent
+			// นับ flag นี้บน UDP เป็นฟีเจอร์ "重调度" ที่บัญชีต้องได้รับสิทธิ์ก่อน
+			// ส่งไปแล้วได้ FailedOperation "Uin does not support reschedule function."
+			// ทำให้ UDP Service สร้าง listener ไม่ได้เลย แต่ CLB ถูกสร้างไปแล้วและคิดเงินต่อ
+			DeregisterRT: proto == clb.ProtocolTCP,
 		})
 	}
 	return out, nil
