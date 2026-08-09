@@ -230,8 +230,16 @@ func parseListeners(svc *corev1.Service, a map[string]string) ([]clb.ListenerSpe
 			hc.Type = clb.HealthCheckHTTP
 			hc.Port = hcNodePort
 		}
+		// UDP listener ของ CLB รับ CheckType ได้แค่ CUSTOM เท่านั้น
+		// ("HealthCheck.CheckType should be `CUSTOM` in UDP listener.")
+		// ซึ่งต้องมี SendContext/RecvContext เป็น payload เฉพาะของแต่ละแอป
+		// ไม่มีค่ากลางที่ probe nodePort ทั่วไปได้ จึงปิด health check ไปเลย
+		// ตรงไปตรงมากว่าการส่ง probe มั่วๆ ที่ทำให้ node ถูกถอนออกผิดตัว
+		if proto == clb.ProtocolUDP {
+			hc.Enabled = false
+		}
 		// ให้ annotation override ได้ แต่เฉพาะกรณีที่ user รู้ว่าทำอะไรอยู่
-		if v := a[AnnoHealthCheckProtocol]; v != "" {
+		if v := a[AnnoHealthCheckProtocol]; v != "" && hc.Enabled {
 			hc.Type = strings.ToUpper(v)
 		}
 		if hc.Type == clb.HealthCheckHTTP {

@@ -82,6 +82,15 @@ func (r *ServiceReconciler) reconcileNormal(ctx context.Context, svc *corev1.Ser
 		}
 	}
 
+	// UDP listener ไม่มี health check (CLB รับแค่ CheckType CUSTOM ที่ต้องมี payload
+	// เฉพาะแอป) CLB จึงแยกไม่ออกว่า node ไหนมี pod อยู่ พอเจอ Local policy ที่ให้
+	// kube-proxy ทิ้ง packet บน node ที่ไม่มี pod ผลคือ traffic หายเงียบๆ บางส่วน
+	if udpWithLocalPolicy(svc) {
+		r.event(svc, corev1.EventTypeWarning, "UDPHealthCheckUnavailable",
+			"UDP ports cannot be health checked by CLB; with externalTrafficPolicy: Local "+
+				"traffic sent to nodes without a backing pod is dropped")
+	}
+
 	r.event(svc, corev1.EventTypeNormal, "EnsuringLoadBalancer", "Ensuring CLB")
 
 	lb, err := r.ensureLoadBalancer(ctx, svc, spec)
@@ -519,6 +528,19 @@ func (r *ServiceReconciler) event(svc *corev1.Service, eventType, reason, msg st
 // serviceKey ใช้ map จาก object อื่นกลับมาเป็น Service
 func serviceKey(namespace, name string) types.NamespacedName {
 	return types.NamespacedName{Namespace: namespace, Name: name}
+}
+
+// udpWithLocalPolicy บอกว่า Service นี้อยู่ในสภาพที่ traffic UDP หายได้เงียบๆ
+func udpWithLocalPolicy(svc *corev1.Service) bool {
+	if svc.Spec.ExternalTrafficPolicy != corev1.ServiceExternalTrafficPolicyLocal {
+		return false
+	}
+	for _, p := range svc.Spec.Ports {
+		if p.Protocol == corev1.ProtocolUDP {
+			return true
+		}
+	}
+	return false
 }
 
 // sameStrings เทียบแบบสนใจลำดับ

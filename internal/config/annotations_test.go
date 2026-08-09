@@ -57,6 +57,36 @@ func TestParse_DeregisterResetOnlyOnTCP(t *testing.T) {
 	}
 }
 
+// CLB รับ CheckType ได้แค่ CUSTOM บน UDP ซึ่งต้องมี payload เฉพาะแอป
+// ส่ง TCP ไปจะโดนปฏิเสธทั้ง listener — ปิด health check ตรงไปตรงมากว่า
+func TestParse_UDPHasNoHealthCheck(t *testing.T) {
+	svc := svcWithPorts(
+		corev1.ServicePort{Name: "web", Port: 80, NodePort: 30080, Protocol: corev1.ProtocolTCP},
+		corev1.ServicePort{Name: "dns", Port: 53, NodePort: 30053, Protocol: corev1.ProtocolUDP},
+	)
+	svc.Spec.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyLocal
+	svc.Spec.HealthCheckNodePort = 32000
+	// annotation override ต้องไม่ปลุก health check ของ UDP กลับมา
+	svc.Annotations = map[string]string{AnnoHealthCheckProtocol: "HTTP"}
+
+	spec, err := Parse(svc, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range spec.Listeners {
+		switch l.Protocol {
+		case clb.ProtocolUDP:
+			if l.HealthCheck.Enabled {
+				t.Error("UDP listener must not carry a health check; CLB rejects every type but CUSTOM")
+			}
+		case clb.ProtocolTCP:
+			if !l.HealthCheck.Enabled {
+				t.Error("TCP listener lost its health check")
+			}
+		}
+	}
+}
+
 func TestParse_RejectsUnsupportedProtocol(t *testing.T) {
 	svc := svcWithPorts(corev1.ServicePort{
 		Name: "sctp", Port: 80, NodePort: 30080, Protocol: corev1.ProtocolSCTP,

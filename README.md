@@ -125,15 +125,27 @@ in-memory fake)
 | `SetLoadBalancerSecurityGroups` | ผ่าน — ผูกแล้วกรอง traffic จริง |
 | ลบ CLB ตอนลบ Service | ผ่าน — ปิด protection เอง ลบ CLB แล้วปล่อย finalizer ใน 11 วินาที |
 | CLB แบบ `INTERNAL` | ผ่าน — ได้ VIP ในซับเน็ตของ node (ต่างจาก OPEN ที่ได้ domain) |
-| listener UDP | ผ่านหลังแก้ `DeregisterTargetRst` (ดูด้านล่าง) |
+| listener UDP | ผ่านหลังแก้สองจุด — `DeregisterTargetRst` และ health check (ดูด้านล่าง) |
 | `IPV6FullChain` | **บัญชีนี้ไม่รองรับ** — `Uin ... do not support create IPv6 full chain loadbalancer` ต้องขอเปิดกับ Tencent |
 | CAM deny policy กันแก้จาก console | **ยังไม่ยืนยัน** — ต้องลองด้วย user จริง |
 
-> **UDP ห้ามส่ง `DeregisterTargetRst`** — Tencent นับ flag นี้บน UDP เป็นฟีเจอร์
-> 重调度 ที่บัญชีต้องได้สิทธิ์ก่อน ส่งไปแล้วได้ `FailedOperation: Uin does not
-> support reschedule function.` แล้ว listener สร้างไม่ได้เลย ทั้งที่ CLB ถูกสร้าง
-> ไปแล้วและคิดเงินต่อ ตัว flag เองก็ไม่มีความหมายกับ UDP อยู่แล้วเพราะไม่มี
-> connection ให้ RST — controller จึงส่งเฉพาะ listener TCP
+**UDP listener มีข้อห้ามสองข้อที่ error message ไม่ได้บอกพร้อมกัน** เจอทีละอัน
+เพราะอันแรกบังอันที่สองอยู่:
+
+- **ห้ามส่ง `DeregisterTargetRst`** Tencent นับ flag นี้บน UDP เป็นฟีเจอร์ 重调度
+  ที่บัญชีต้องได้สิทธิ์ก่อน → `FailedOperation: Uin does not support reschedule
+  function.` ตัว flag เองก็ไม่มีความหมายกับ UDP เพราะไม่มี connection ให้ RST
+- **health check ต้องเป็น `CUSTOM` เท่านั้น** → `InvalidParameterValue:
+  HealthCheck.CheckType should be CUSTOM in UDP listener.` ซึ่ง CUSTOM ต้องมี
+  `SendContext`/`RecvContext` เป็น payload เฉพาะแอป ไม่มีค่ากลางที่ probe nodePort
+  ทั่วไปได้ controller จึง **ปิด health check ของ UDP ไปเลย**
+
+ทั้งสองเคสจบเหมือนกันคือ listener สร้างไม่ได้ แต่ CLB ถูกสร้างไปแล้วและคิดเงินต่อ
+
+> UDP ที่ไม่มี health check แปลว่า CLB แยกไม่ออกว่า node ไหนมี pod อยู่
+> คู่กับ `externalTrafficPolicy: Local` ที่ kube-proxy ทิ้ง packet บน node ที่ไม่มี
+> pod ผลคือ traffic หายเงียบๆ บางส่วน — controller เตือนด้วย Event
+> `UDPHealthCheckUnavailable` ใช้ `Cluster` แทนถ้าไม่จำเป็นต้องได้ source IP จริง
 
 > **CLB บางภูมิภาคเป็น DNS ไม่ใช่ IP** — `ap-bangkok` คืน `LoadBalancerVips: []`
 > แต่ให้ `Domain` มาแทน controller จึงเขียนลง `ingress[0].hostname` ไม่ใช่ `.ip`
@@ -444,6 +456,7 @@ kubectl -n kube-system logs deploy/clb-controller -f
 | `SyncLoadBalancerFailed` | error จาก Tencent API — ถ้าเป็น auth/quota จะ backoff 5 นาทีแทน retry รัว |
 | ↳ พร้อม `UnauthorizedOperation` | **สิทธิ์ CAM ขาด ไม่ใช่บั๊ก** ชื่อ action อยู่ในข้อความ error ไปเพิ่มใน policy ตัวจริงบน console |
 | `BackendSecurityGroupBypassed` | เปิด `pass-to-target` แต่ไม่ได้ผูก SG ให้ CLB — nodePort รับทุกคนที่ยิงถึง CLB ได้ |
+| `UDPHealthCheckUnavailable` | UDP + `externalTrafficPolicy: Local` — CLB health check UDP ไม่ได้ traffic ที่ไปลง node ที่ไม่มี pod จึงหายเงียบๆ |
 | `EnsuredLoadBalancer` | sync แล้ว |
 
 **Service ค้าง Terminating** = ลบ CLB ไม่สำเร็จ finalizer จึงไม่ถูกปลด ดู Event
