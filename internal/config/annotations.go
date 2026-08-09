@@ -31,12 +31,9 @@ const (
 	AnnoSessionExpireTime = Prefix + "session-expire-time"
 
 	// AnnoDeleteProtection เปิด "删除保护" ของ CLB — กันคนลบพลาดจาก console
+	// ครอบเฉพาะการลบ ไม่ได้ครอบการแก้ไข การกันแก้ไขต้องใช้ CAM deny policy
+	// (deploy/cam/deny-console-edit.json)
 	AnnoDeleteProtection = Prefix + "delete-protection"
-	// AnnoCCMModificationProtection คือ annotation ของ cloud-controller-manager ตัวเต็ม
-	// รับไว้ให้ย้ายมาจาก CCM ได้โดยไม่ต้องแก้ manifest
-	// เราแมปเป็น DeleteProtect ของ CLB ซึ่งครอบเฉพาะการลบ ไม่ได้ครอบการแก้ไข —
-	// การกันแก้ไขต้องใช้ CAM deny policy (deploy/cam/deny-console-edit.json)
-	AnnoCCMModificationProtection = "service.cloud.tencent.com/modification-protection"
 
 	AnnoHealthCheckProtocol = Prefix + "health-check-protocol"
 	AnnoHealthCheckPath     = Prefix + "health-check-path"
@@ -96,7 +93,7 @@ func Parse(svc *corev1.Service, cfg *Config) (LBSpec, error) {
 	}
 
 	spec.ExistingID = a[AnnoExistingLoadBalancerID]
-	spec.DeleteProtect = isTrue(a[AnnoDeleteProtection]) || isTrue(a[AnnoCCMModificationProtection])
+	spec.DeleteProtect = isTrue(a[AnnoDeleteProtection])
 	spec.Create = clb.CreateSpec{
 		Name:             lbName(svc, cfg.ClusterID),
 		Type:             lbType,

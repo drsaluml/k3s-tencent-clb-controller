@@ -389,19 +389,15 @@ func TestReconcile_DoesNotClaimSuccessWithoutAnAddress(t *testing.T) {
 }
 
 func TestReconcile_EnablesDeleteProtection(t *testing.T) {
-	for _, anno := range []string{config.AnnoDeleteProtection, config.AnnoCCMModificationProtection} {
-		t.Run(anno, func(t *testing.T) {
-			svc := traefikService()
-			svc.Annotations = map[string]string{anno: "true"}
-			r, fake, c := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
+	svc := traefikService()
+	svc.Annotations = map[string]string{config.AnnoDeleteProtection: "true"}
+	r, fake, c := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
 
-			reconcileOnce(t, r, svc)
+	reconcileOnce(t, r, svc)
 
-			lbID := getService(t, c, svc).Annotations[config.AnnoLoadBalancerID]
-			if !fake.LBs[lbID].DeleteProtect {
-				t.Fatal("delete protection was not enabled on the CLB")
-			}
-		})
+	lbID := getService(t, c, svc).Annotations[config.AnnoLoadBalancerID]
+	if !fake.LBs[lbID].DeleteProtect {
+		t.Fatal("delete protection was not enabled on the CLB")
 	}
 }
 

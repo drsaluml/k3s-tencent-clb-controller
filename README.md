@@ -401,8 +401,7 @@ docker manifest inspect ghcr.io/drsaluml/k3s-tencent-clb-controller:0.1.0 >/dev/
 | `clb.tencentcloud.com/internet-max-bandwidth-out` | Mbps |
 | `clb.tencentcloud.com/scheduler` | `WRR` / `LEAST_CONN` / `IP_HASH` |
 | `clb.tencentcloud.com/session-expire-time` | วินาที |
-| `clb.tencentcloud.com/delete-protection` | `"true"` เปิด 删除保护 ของ CLB — กันลบพลาดจาก console |
-| `service.cloud.tencent.com/modification-protection` | alias ของอันบน รับไว้ให้ย้ายมาจาก CCM ตัวเต็มได้ |
+| `clb.tencentcloud.com/delete-protection` | `"true"` เปิด 删除保护 ของ CLB — กันลบพลาดจาก console (กันแก้ไขใช้ CAM deny policy) |
 | `clb.tencentcloud.com/health-check-protocol` | `TCP` / `HTTP` — override ค่าที่ controller เลือกให้ |
 | `clb.tencentcloud.com/health-check-path` | ใช้เมื่อ health check เป็น HTTP |
 | `clb.tencentcloud.com/health-check-domain` | Host header ของ HTTP health check (default `<svc>.<ns>`) — CLB บังคับให้มีค่า |
