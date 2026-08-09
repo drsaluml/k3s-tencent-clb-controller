@@ -22,7 +22,10 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # write ไม่ใช่ read — ขั้นสุดท้ายสร้าง GitHub Release ซึ่งเขียนลง repo
+      # ถ้าเป็น read จะได้ 403 "Resource not accessible by integration"
+      # หลัง image ถูก push ขึ้น GHCR สำเร็จไปแล้ว
+      contents: write
       # จำเป็นสำหรับ push ขึ้น GHCR ด้วย GITHUB_TOKEN — ไม่ต้องสร้าง PAT
       packages: write
       # ให้ cosign/provenance ขอ OIDC token ได้
