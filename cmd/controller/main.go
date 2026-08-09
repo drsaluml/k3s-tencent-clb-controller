@@ -51,10 +51,13 @@ func run() error {
 		nodeCacheTTL       time.Duration
 	)
 
-	flag.StringVar(&cfg.ClusterID, "cluster-id", "", "unique id for this cluster; scopes CLB ownership tags")
-	flag.StringVar(&cfg.Region, "region", os.Getenv("TENCENTCLOUD_REGION"), "Tencent Cloud region")
-	flag.StringVar(&cfg.VpcID, "vpc-id", "", "VPC that the cluster nodes live in")
-	flag.StringVar(&cfg.DefaultSubnetID, "default-subnet-id", "", "subnet used for internal load balancers when the Service does not specify one")
+	// ค่าสามตัวนี้ต่างกันทุกคลัสเตอร์ จึงรับผ่าน env ได้ด้วย (flag ชนะถ้าระบุทั้งคู่)
+	// ทำแบบนี้ทำให้ manifest เป็นไฟล์คงที่ที่ apply ซ้ำได้โดยไม่ต้องแก้ —
+	// การต้องแก้ไฟล์ก่อน apply ทุกครั้งคือต้นเหตุที่ค่า placeholder หลุดขึ้น production
+	flag.StringVar(&cfg.ClusterID, "cluster-id", envOr("CLUSTER_ID", ""), "unique id for this cluster; scopes CLB ownership tags [env CLUSTER_ID]")
+	flag.StringVar(&cfg.Region, "region", envOr("TENCENTCLOUD_REGION", ""), "Tencent Cloud region [env TENCENTCLOUD_REGION]")
+	flag.StringVar(&cfg.VpcID, "vpc-id", envOr("VPC_ID", ""), "VPC that the cluster nodes live in [env VPC_ID]")
+	flag.StringVar(&cfg.DefaultSubnetID, "default-subnet-id", envOr("DEFAULT_SUBNET_ID", ""), "subnet used for internal load balancers when the Service does not specify one [env DEFAULT_SUBNET_ID]")
 	flag.StringVar(&cfg.ClassExternal, "loadbalancer-class-external", config.DefaultClassExternal, "spec.loadBalancerClass handled as a public CLB")
 	flag.StringVar(&cfg.ClassInternal, "loadbalancer-class-internal", config.DefaultClassInternal, "spec.loadBalancerClass handled as an internal CLB")
 	flag.DurationVar(&cfg.ResyncPeriod, "resync-period", 10*time.Minute, "how often to re-check every managed CLB for drift")
@@ -148,6 +151,16 @@ func run() error {
 	setupLog.Info("starting clb controller",
 		"cluster", cfg.ClusterID, "region", cfg.Region, "vpc", cfg.VpcID)
 	return mgr.Start(ctrl.SetupSignalHandler())
+}
+
+// envOr อ่านค่าจาก env ใช้เป็น default ของ flag
+// เว้นวรรคหัวท้ายถูกตัดทิ้ง เพราะค่าที่มาจาก ConfigMap ที่คนพิมพ์เองมักติดมาโดยไม่ตั้งใจ
+// แล้วทำให้ region หรือ vpc-id ผิดแบบที่มองไม่เห็นใน log
+func envOr(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
 }
 
 func parseLabels(s string) map[string]string {

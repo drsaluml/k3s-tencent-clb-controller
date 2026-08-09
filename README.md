@@ -143,26 +143,52 @@ Controller เรียก API แค่ 12 ตัวนี้เท่านั
 > บางบัญชีต้องมีสิทธิ์ฝั่ง tag service เพิ่มถึงจะแนบ tag ตอนสร้างได้ ลองเพิ่ม
 > `tag:AddResourceTag` `tag:DescribeResourceTagsByResourceIds` `tag:GetTags`
 
-### 2. Credentials + manifests
+### 2. Deploy
+
+`deploy/manifests.yaml` **ไม่มีค่าที่ต้องแก้ก่อน apply** — ค่าที่ต่างกันในแต่ละคลัสเตอร์
+อยู่ใน ConfigMap/Secret ที่สร้างแยก จึง `apply` ซ้ำได้ตลอดโดยไม่ทับของเดิม
+
+**วิธีที่ง่ายที่สุด — คำสั่งเดียวจบ**
 
 ```bash
-# read -rs กันคีย์ติด shell history
-read -rs -p "secret-id: "  SID; echo
-read -rs -p "secret-key: " SKEY; echo
-kubectl -n kube-system create secret generic tencentcloud-credentials \
-  --from-literal=secret-id="$SID" \
-  --from-literal=secret-key="$SKEY"
-unset SID SKEY
+./deploy/install.sh --cluster-id th1 --region ap-bangkok --vpc-id vpc-xxxxxxxx
+```
 
-# แก้ --cluster-id / --region / --vpc-id ใน deploy/manifests.yaml ก่อน
+```powershell
+.\deploy\install.ps1 -ClusterId th1 -Region ap-bangkok -VpcId vpc-xxxxxxxx
+```
+
+สคริปต์จะ validate ค่า, สร้าง ConfigMap + Secret, apply manifests, restart แล้วโชว์ log ให้
+รันซ้ำได้เสมอ — **Secret เดิมจะไม่ถูกแตะ** เว้นแต่สั่ง `--rotate-credentials` / `-RotateCredentials`
+
+**หรือทำเองทีละขั้น**
+
+```bash
+kubectl -n kube-system create configmap clb-controller-config \
+  --from-literal=CLUSTER_ID=th1 \
+  --from-literal=TENCENTCLOUD_REGION=ap-bangkok \
+  --from-literal=VPC_ID=vpc-xxxxxxxx \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n kube-system create secret generic tencentcloud-credentials \
+  --from-literal=TENCENTCLOUD_SECRET_ID="$SID" \
+  --from-literal=TENCENTCLOUD_SECRET_KEY="$SKEY"
+
 kubectl apply -f deploy/manifests.yaml
 ```
 
-`--region` **ต้องตรงกับภูมิภาคที่ node อยู่จริง** ถ้าผิด controller จะไปสร้าง CLB
+> key ของ ConfigMap/Secret ต้องเป็นชื่อ env var ที่ถูกต้อง (ไม่มีขีดกลาง) เพราะ Deployment
+> ใช้ `envFrom` — key อย่าง `secret-id` จะถูก kubelet ข้ามทิ้งพร้อม warning event
+> แล้ว controller จะบอกว่าหา credential ไม่เจอ
+
+`TENCENTCLOUD_REGION` **ต้องตรงกับภูมิภาคที่ node อยู่จริง** ถ้าผิด controller จะไปสร้าง CLB
 คนละภูมิภาคกับ node แล้วหา CVM ไม่เจอ ขึ้น Event `NodesNotResolvable` ทุก node
 
-controller ไม่ได้ watch secret — **เวลาหมุนคีย์ต้อง**
-`kubectl -n kube-system rollout restart deploy/clb-controller` ด้วย
+`envFrom` ถูกอ่านตอน pod start เท่านั้น — **แก้ ConfigMap หรือหมุนคีย์แล้วต้อง**
+`kubectl -n kube-system rollout restart deploy/clb-controller` (install script ทำให้อัตโนมัติ)
+
+ถ้า ConfigMap ไม่มี pod จะไม่ start เลย ขึ้น `CreateContainerConfigError` — ตั้งใจให้พังดังๆ
+ดีกว่ารันด้วยค่า placeholder แล้วไปสร้าง CLB ผิดที่
 
 #### เรื่อง `--cluster-id`
 

@@ -67,19 +67,23 @@ subjects:
     name: clb-controller
     namespace: kube-system
 ---
-# Secret ถูกตั้งใจไม่ให้อยู่ในไฟล์นี้
+# ConfigMap และ Secret ถูกตั้งใจไม่ให้อยู่ในไฟล์นี้
 #
-# ถ้าใส่ Secret ที่มีค่า placeholder ไว้ตรงนี้ การ `kubectl apply -f manifests.yaml`
-# ครั้งถัดไปจะเขียนทับคีย์จริงด้วย placeholder เงียบๆ แล้ว controller จะ auth ไม่ผ่าน
-# โดยที่ไม่มีอะไรบอกว่าเกิดอะไรขึ้น
+# ถ้าใส่ค่า placeholder ไว้ตรงนี้ การ `kubectl apply -f manifests.yaml` ครั้งถัดไป
+# จะเขียนทับค่าจริงด้วย placeholder เงียบๆ แล้ว controller จะ auth ไม่ผ่าน
+# หรือแย่กว่านั้นคือไปสร้าง CLB ผิดภูมิภาค โดยไม่มีอะไรบอกว่าเกิดอะไรขึ้น
 #
-# สร้างแยกครั้งเดียวด้วย (read -rs กันคีย์ติด shell history):
+# key ต้องเป็นชื่อ env var ที่ถูกต้อง เพราะ Deployment ใช้ envFrom —
+# key ที่มีขีดกลางจะถูก kubelet ข้ามทิ้งพร้อม warning event
 #
-#   read -rs -p "secret-id: "  SID; echo
-#   read -rs -p "secret-key: " SKEY; echo
+#   kubectl -n kube-system create configmap clb-controller-config \
+#     --from-literal=CLUSTER_ID=th1 \
+#     --from-literal=TENCENTCLOUD_REGION=ap-bangkok \
+#     --from-literal=VPC_ID=vpc-xxxxxxxx
+#
 #   kubectl -n kube-system create secret generic tencentcloud-credentials \
-#     --from-literal=secret-id="$SID" --from-literal=secret-key="$SKEY"
-#   unset SID SKEY
+#     --from-literal=TENCENTCLOUD_SECRET_ID="$SID" \
+#     --from-literal=TENCENTCLOUD_SECRET_KEY="$SKEY"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -118,30 +122,21 @@ spec:
       containers:
         - name: controller
           image: ghcr.io/drsaluml/k3s-tencent-clb-controller:latest
+          # ไฟล์นี้ไม่มีค่าที่ต้องแก้ก่อน apply เลย — ค่าที่ต่างกันในแต่ละคลัสเตอร์
+          # อยู่ใน ConfigMap/Secret ที่สร้างแยก ทำให้ apply ซ้ำได้ตลอดโดยไม่ทับของเดิม
           args:
-            # ต้องไม่ซ้ำกับคลัสเตอร์อื่นใน account เดียวกัน ไม่งั้นสองคลัสเตอร์
-            # จะมองเห็น CLB ของกันและกันจาก tag แล้วแย่งกัน reconcile
-            - --cluster-id=CHANGE-ME
-            # ต้องตรงกับภูมิภาคที่ node อยู่จริง ผิดแล้วจะสร้าง CLB คนละภูมิภาค
-            # กับ node แล้วหา CVM ไม่เจอ ขึ้น NodesNotResolvable ทุก node
-            - --region=CHANGE-ME
-            - --vpc-id=vpc-CHANGEME
-            # - --default-subnet-id=subnet-xxxx   # จำเป็นถ้าจะใช้ internal LB
             - --leader-elect=true
             - --concurrent-service-syncs=2
             - --resync-period=10m
             - --cloud-api-qps=10
-          env:
-            - name: TENCENTCLOUD_SECRET_ID
-              valueFrom:
-                secretKeyRef:
-                  name: tencentcloud-credentials
-                  key: secret-id
-            - name: TENCENTCLOUD_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: tencentcloud-credentials
-                  key: secret-key
+          envFrom:
+            # CLUSTER_ID / TENCENTCLOUD_REGION / VPC_ID / DEFAULT_SUBNET_ID
+            # ถ้า ConfigMap ไม่มี pod จะไม่ start เลย — ตั้งใจให้พังดังๆ
+            # ดีกว่ารันด้วยค่า placeholder แล้วไปสร้าง CLB ผิดที่
+            - configMapRef:
+                name: clb-controller-config
+            - secretRef:
+                name: tencentcloud-credentials
           ports:
             - name: metrics
               containerPort: 8080
