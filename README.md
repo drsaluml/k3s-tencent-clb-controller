@@ -335,10 +335,13 @@ git push origin v0.1.0
 จะได้ image หลาย tag พร้อมกัน (`linux/amd64` + `linux/arm64`):
 
 ```
-ghcr.io/drsaluml/k3s-tencent-clb-controller:v0.1.0
+ghcr.io/drsaluml/k3s-tencent-clb-controller:0.1.0
 ghcr.io/drsaluml/k3s-tencent-clb-controller:0.1
 ghcr.io/drsaluml/k3s-tencent-clb-controller:latest
 ```
+
+> **image tag ไม่มี `v` นำหน้า** — git tag คือ `v0.1.0` แต่ `docker/metadata-action`
+> ตัด `v` ออกจาก `{{version}}` ดังนั้น `:v0.1.0` จะ pull ไม่เจอ ต้องใช้ `:0.1.0`
 
 > tag `:<major>` (เช่น `:1`) จะถูกสร้างเมื่อออกจาก 0.x แล้วเท่านั้น
 > เพราะ semver ถือว่า 0.x ยัง breaking ได้ทุก minor
@@ -367,6 +370,12 @@ kubectl -n kube-system create secret docker-registry ghcr \
 
 ```bash
 docker build --build-arg VERSION=dev -t clb-controller:dev .
+```
+
+ตรวจว่า image ขึ้น GHCR แล้วหรือยังก่อน rollout (ไม่ต้อง login ถ้า package เป็น public):
+
+```bash
+docker manifest inspect ghcr.io/drsaluml/k3s-tencent-clb-controller:0.1.0 >/dev/null && echo ok
 ```
 
 เวอร์ชันถูก stamp เข้า binary และถูก log ตอน start เสมอ —
