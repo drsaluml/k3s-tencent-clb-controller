@@ -1,20 +1,20 @@
 # k3s-tencent-clb-controller
 
-Controller ขนาดเล็กที่ reconcile **เฉพาะ** `Service` type `LoadBalancer` → Tencent Cloud CLB
+Controller เล็กๆ ที่ reconcile `Service` type `LoadBalancer` → Tencent Cloud CLB
 สำหรับ K3s / Kubernetes 1.36 ที่ใช้ Traefik เป็น ingress
 
-ออกแบบมาแทน [tencentcloud-cloud-controller-manager](https://github.com/TencentCloud/tencentcloud-cloud-controller-manager)
+ทำมาแทน [tencentcloud-cloud-controller-manager](https://github.com/TencentCloud/tencentcloud-cloud-controller-manager)
 ในเคสที่ต้องการแค่ "Traefik หนึ่ง Service → CLB หนึ่งตัว"
-รายละเอียดการตัดสินใจเชิงออกแบบอยู่ใน [DESIGN.md](DESIGN.md)
+เหตุผลเชิงออกแบบอยู่ใน [DESIGN.md](DESIGN.md)
 
 ## ทำไมไม่ใช้ CCM ตัวเต็ม
 
-CCM ต้องเปิด `--cloud-provider=external` ซึ่งจะ taint node ทุกตัวด้วย
-`node.cloudprovider.kubernetes.io/uninitialized` จนกว่า cloud provider จะ initialize สำเร็จ
+CCM ต้องเปิด `--cloud-provider=external` ซึ่ง taint node ทุกตัวด้วย
+`node.cloudprovider.kubernetes.io/uninitialized` จนกว่าจะ initialize สำเร็จ
 ถ้า controller พังหรือ credential หมดอายุ node ใหม่จะไม่ขึ้นและ workload ไม่ถูก schedule
 
-controller ตัวนี้เป็น Deployment ธรรมดา ไม่แตะ node lifecycle เลย
-พังแล้วแค่ LB หยุด sync — คลัสเตอร์ยังทำงานปกติ
+ตัวนี้เป็น Deployment ธรรมดา ไม่แตะ node lifecycle เลย พังแล้วแค่ LB หยุด sync
+คลัสเตอร์ยังทำงานปกติ
 
 | | CCM ตัวเต็ม | ตัวนี้ |
 |---|---|---|
@@ -31,15 +31,15 @@ Service (type=LoadBalancer, loadBalancerClass=clb.tencentcloud.com/external)
    ├─ 1. ใส่ finalizer                      ← ก่อนแตะ cloud เสมอ
    ├─ 2. หา CLB: annotation → tag → สร้างใหม่
    │        เขียน loadbalancer-id กลับทันทีที่รู้ id
-   ├─ 3. listener  ← ServicePort (CLB เปิด :80/:443 ตาม spec.ports[].port)
+   ├─ 3. listener  ← ServicePort
    ├─ 4. target    ← node + EndpointSlice (ผูก ins-xxxx:nodePort)
-   └─ 5. status.loadBalancer.ingress[0].ip = VIP ของ CLB
+   └─ 5. status.loadBalancer.ingress
 ```
 
-CLB ทำหน้าที่ L4 ล้วน — traffic วิ่งเข้า nodePort ของ Traefik แล้ว Traefik
-จัดการ TLS + routing เอง ไม่มีการทำ L7 ซ้ำบน CLB
+CLB ทำ L4 ล้วน — traffic วิ่งเข้า nodePort ของ Traefik แล้ว Traefik จัดการ TLS กับ
+routing เอง ไม่ทำ L7 ซ้ำบน CLB
 
-การ resync เกิดทุก `--resync-period` (default 10 นาที) เพื่อแก้ drift ที่เกิดนอก k8s
+resync ทุก `--resync-period` (default 10 นาที) เพื่อดึง drift ที่เกิดนอก k8s กลับมา
 เช่นมีคนไปลบ listener ทิ้งบน console
 
 ## ตัวอย่าง Service
@@ -68,71 +68,45 @@ spec:
       targetPort: websecure
 ```
 
-หลัง reconcile สำเร็จ Service จะมี annotation `clb.tencentcloud.com/loadbalancer-id`
-เพิ่มเข้ามา และ `status.loadBalancer.ingress` จะมี VIP ของ CLB
+reconcile สำเร็จแล้ว Service จะได้ annotation `clb.tencentcloud.com/loadbalancer-id`
+กับค่าใน `status.loadBalancer.ingress` เพิ่มมา
 
 ## สถานะการพัฒนา
 
-**ทำแล้ว**
+**ทำแล้ว** — สร้าง/adopt/ลบ CLB, listener sync (TCP/UDP), target sync ตาม node +
+EndpointSlice, `externalTrafficPolicy: Local` พร้อม healthCheckNodePort, override
+health check ผ่าน annotation, finalizer + กู้สถานะจาก tag เมื่อ crash, delete
+protection (เปิดเป็นค่าเริ่มต้น), security group + `pass-to-target`, CLB แบบ DNS
+ที่ไม่มี VIP, resolve node → CVM พร้อม cache, rate limit + รอ async task,
+leader election / healthz / metrics, CAM policy สำเร็จรูป, CI + release ขึ้น GHCR
 
-| ส่วน | หมายเหตุ |
-|---|---|
-| สร้าง / adopt / ลบ CLB ตาม Service | adopt แล้วไม่ลบตอน Service หาย และไม่แตะ listener ที่ไม่ใช่ของเรา |
-| Listener sync (TCP/UDP) ตาม ServicePort | จงใจไม่รองรับ L7 — ดู "สิ่งที่จงใจไม่ทำ" |
-| Target sync ตาม node + EndpointSlice | คัด node ออกได้ด้วย `--excluded-node-labels` |
-| `externalTrafficPolicy: Local` + healthCheckNodePort | health check เปลี่ยนเป็น HTTP อัตโนมัติ |
-| override health check ผ่าน annotation | protocol / path / domain / interval / timeout |
-| Finalizer + กู้สถานะจาก tag เมื่อ crash | `ClientToken` กัน CLB ผีเมื่อ crash หลังสร้างแต่ก่อนเขียน annotation |
-| Delete protection (**เปิดเป็นค่าเริ่มต้น**) | ปิดให้อัตโนมัติก่อนลบ ไม่งั้น Service ค้าง `Terminating` |
-| Security group ของ CLB + `pass-to-target` | จัดการเฉพาะเมื่อใส่ annotation — ไม่ใส่ = ไม่เข้าไปยุ่ง |
-| รองรับ CLB แบบ DNS (ไม่มี VIP) | เขียน `status` เป็น `hostname` เช่นเดียวกับ AWS ELB |
-| resolve node → CVM instance + cache | override ได้ด้วย annotation `clb.tencentcloud.com/instance-id` บน node |
-| Client-side rate limit + รอ async task ทุกครั้ง | CLB API เป็น async ทั้งหมด และ limit ต่ำกว่าที่คนส่วนใหญ่คาด |
-| Leader election, healthz/readyz, metrics endpoint | |
-| CAM policy สำเร็จรูป (allow ของ controller + deny console) | `deploy/cam/` |
-| CI + release image ขึ้น GHCR | `.github/workflows/` |
+**ยังไม่ทำ** — Orphan GC (CLB ที่หลุดต้องตามลบเอง), metric ของ CLB API, Helm chart,
+derive `--cluster-id` อัตโนมัติ, CVM instance role (ยังใช้ static key), e2e test
+ที่ยิง API จริง (test ทั้งหมดใช้ in-memory fake)
 
-**ยังไม่ทำ**
-
-| ส่วน | หมายเหตุ |
-|---|---|
-| Orphan GC (ลบ CLB ที่ไม่มี Service คู่แล้ว) | ตอนนี้ CLB ที่หลุดต้องตามลบเอง |
-| Prometheus metric ของ CLB API เอง | metrics endpoint มีแล้วแต่ยังไม่มี metric ของฝั่ง cloud |
-| Helm chart | ใช้ `deploy/manifests.yaml` ไปก่อน |
-| derive `--cluster-id` จาก UID ของ namespace `kube-system` อัตโนมัติ | ตอนนี้ต้องตั้งเองใน ConfigMap |
-| CVM instance role (ไม่ต้องเก็บ static key) | ตอนนี้ยังใช้ static key ใน Secret |
-| e2e test ที่ยิง Tencent API จริง | test ทั้งหมดใช้ in-memory fake |
-
-**สถานะการยืนยันกับ Tencent Cloud API จริง** (k3s v1.36.2, ap-bangkok)
-
-ตารางนี้คือสิ่งที่ **ยิงกับคลาวด์จริงแล้ว** ไม่ใช่แค่ผ่าน test — แยกจากตารางบน
-เพราะ "โค้ดเขียนแล้ว" กับ "รู้ว่าใช้ได้จริง" ไม่ใช่เรื่องเดียวกัน
+**ยืนยันกับ API จริงแล้วแค่ไหน** (k3s v1.36.2, ap-bangkok) — แยกออกมาเพราะ
+"โค้ดเขียนแล้ว" กับ "รู้ว่าใช้ได้จริง" ไม่ใช่เรื่องเดียวกัน
 
 | ขั้น | ผล |
 |---|---|
-| อ่าน config จาก ConfigMap/Secret, leader election | ผ่าน |
-| `DescribeLoadBalancers` ค้นด้วย tag | ผ่าน |
+| config, leader election, ค้น CLB ด้วย tag | ผ่าน |
 | `CreateLoadBalancer` + รอ async task | ผ่าน |
 | `CreateListener` (HTTP health check) | ผ่าน (v0.2.1 หลังแก้ `HttpCheckDomain`) |
-| `RegisterTargets` | ผ่าน |
-| `status.loadBalancer` | เคยค้างว่างเพราะ CLB เป็นแบบ DNS — แก้แล้ว **ยังไม่ยืนยันซ้ำ** |
-| traffic ทะลุ CLB ถึง Traefik จริง | **ยังไม่ผ่าน** — SG ของ node ยังปิด nodePort อยู่ ดู Troubleshooting |
-| การลบ CLB ตอนลบ Service | **ยังไม่ยืนยัน** |
-| `ModifyLoadBalancerAttributes` (delete protection, pass-to-target) | **ยังไม่ยืนยัน** — สิทธิ์ CAM เพิ่งถูกเพิ่มใน 3474129 ของเดิมขาดไป |
-| `SetLoadBalancerSecurityGroups` | **ยังไม่ยืนยัน** |
-| CAM deny policy กันแก้จาก console ได้จริง | **ยังไม่ยืนยัน** — ต้องลองด้วย user จริงหนึ่งคน |
+| `RegisterTargets`, `status.loadBalancer` เป็น hostname | ผ่าน |
+| traffic ทะลุ CLB ถึง Traefik | ผ่าน — ต้องใช้ `pass-to-target` ดู Troubleshooting |
+| `ModifyLoadBalancerAttributes` | ผ่าน — delete protection กับ pass-to-target ติดจริง |
+| `SetLoadBalancerSecurityGroups` | ผ่าน — ผูกแล้วกรอง traffic จริง |
+| ลบ CLB ตอนลบ Service | **ยังไม่ยืนยัน** |
+| CAM deny policy กันแก้จาก console | **ยังไม่ยืนยัน** — ต้องลองด้วย user จริง |
 
-> **CLB บางภูมิภาคเป็นแบบ DNS ไม่ใช่ IP** — `ap-bangkok` คืน `LoadBalancerVips: []`
-> แต่ให้ `Domain` มาแทน controller จึงเขียนลง `status.loadBalancer.ingress[0].hostname`
-> (แบบเดียวกับที่ AWS ELB ทำ) ไม่ใช่ `.ip` — `kubectl get svc` จะโชว์เป็นชื่อโดเมน
-
-test อัตโนมัติทั้งหมดใช้ in-memory fake — ทำ checklist ท้ายไฟล์ก่อนขึ้น production
+> **CLB บางภูมิภาคเป็น DNS ไม่ใช่ IP** — `ap-bangkok` คืน `LoadBalancerVips: []`
+> แต่ให้ `Domain` มาแทน controller จึงเขียนลง `ingress[0].hostname` ไม่ใช่ `.ip`
 
 ## ติดตั้ง
 
 ### 1. เตรียมสิทธิ์ฝั่ง Tencent Cloud
 
-Controller เรียก API แค่ 14 ตัวนี้เท่านั้น สร้าง custom policy ชื่อ **`K3sTencentCLBController`**
+Controller เรียก API แค่ 14 ตัวนี้ สร้าง custom policy ชื่อ **`K3sTencentCLBController`**
 
 ```json
 {
@@ -162,100 +136,80 @@ Controller เรียก API แค่ 14 ตัวนี้เท่านั
 }
 ```
 
-> ⚠️ **แก้ไฟล์ในรีโปไม่ได้เปลี่ยนอะไรบนคลาวด์** — `deploy/cam/*.json` เป็นแค่เทมเพลต
-> ต้องเอาไป **อัปเดต policy ตัวจริงบน CAM console** ที่ผูกกับ sub-user ด้วยทุกครั้ง
-> ไม่งั้น controller จะยิง API แล้วโดนปฏิเสธเงียบๆ โผล่เป็น Event บน Service เท่านั้น
-> — เสียเวลาไล่หาสาเหตุที่โค้ดทั้งที่โค้ดถูกอยู่แล้ว (เคยเกิดมาแล้ว 2026-08-09)
+> ⚠️ **`deploy/cam/*.json` เป็นแค่เทมเพลต แก้ไฟล์ไม่เปลี่ยนอะไรบนคลาวด์**
+> ต้องเอาไปอัปเดต policy ตัวจริงบน CAM console ทุกครั้ง ไม่งั้น controller ยิง API
+> แล้วโดนปฏิเสธ โผล่เป็น Event บน Service เท่านั้น — เสียเวลาไล่หาบั๊กที่ไม่มีอยู่
 
-สี่ตัวที่คนมักลืมและทำให้พังแบบงงๆ:
+สี่ตัวที่คนมักลืมแล้วพังแบบงงๆ:
 
-- **`clb:DescribeTaskStatus`** — CLB API ทุกตัวที่เขียนเป็น async ถ้าไม่มีสิทธิ์นี้
-  controller จะไม่รู้ว่างานเสร็จหรือยัง แล้วค้างทุก operation
-- **`cvm:DescribeInstances`** — `RegisterTargets` รับ `ins-xxxx` ไม่ใช่ IP และ K3s ตั้ง
-  `providerID` เป็น `k3s://<node-name>` ที่ใช้หา CVM ไม่ได้
-- **`clb:ModifyLoadBalancerAttributes`** — ใช้ทั้ง `delete-protection` (ซึ่ง**เปิดเป็น
-  ค่าเริ่มต้น** จึงถูกเรียกกับ CLB ทุกตัว) และ `pass-to-target` ขาดแล้ว CLB สร้างได้
-  ตามปกติแต่ไม่มี protection และ traffic ไม่ทะลุ ซึ่งดูไม่ออกว่าเป็นเรื่องสิทธิ์
-- **`clb:SetLoadBalancerSecurityGroups`** — ใช้กับ annotation `security-groups`
+| Action | ขาดแล้วเป็นยังไง |
+|---|---|
+| `clb:DescribeTaskStatus` | CLB API ที่เขียนเป็น async ทุกตัว ไม่มีสิทธิ์นี้แล้วไม่รู้ว่างานจบยัง ค้างทุก operation |
+| `cvm:DescribeInstances` | `RegisterTargets` รับ `ins-xxxx` ไม่ใช่ IP และ `providerID` ของ k3s ใช้หา CVM ไม่ได้ |
+| `clb:ModifyLoadBalancerAttributes` | delete protection (ซึ่งเปิดเป็นค่าเริ่มต้น) กับ `pass-to-target` ไม่ทำงาน แต่ CLB สร้างได้ปกติ จึงดูไม่ออกว่าเป็นเรื่องสิทธิ์ |
+| `clb:SetLoadBalancerSecurityGroups` | annotation `security-groups` ไม่ทำงาน |
 
-จากนั้นสร้าง sub-user (**อย่าใช้ key ของ root account**)
+จากนั้นสร้าง sub-user (**อย่าใช้ key ของ root account**) เลือกแค่ **Programmatic access**
+— controller ไม่เคยล็อกอินหน้าเว็บ เปิด console access ทิ้งไว้คือเพิ่มช่องโจมตีเปล่าๆ
 
 | อย่าง | ชื่อที่แนะนำ | เหตุผล |
 |---|---|---|
-| Policy | `K3sTencentCLBController` | ใช้ร่วมกันได้ทุกคลัสเตอร์ มีชุดเดียวพอ |
-| User | `k3s-clb-controller-<cluster-id>` | แยกต่อคลัสเตอร์ เพิกถอนคีย์ตัวเดียวได้โดยไม่กระทบตัวอื่น และไล่ CloudAudit ได้ |
+| Policy | `K3sTencentCLBController` | ใช้ร่วมกันได้ทุกคลัสเตอร์ |
+| User | `k3s-clb-controller-<cluster-id>` | แยกต่อคลัสเตอร์ เพิกถอนคีย์ตัวเดียวได้ และไล่ CloudAudit ง่าย |
 
-ตอนสร้าง user เลือกแค่ **Programmatic access** — controller ไม่เคยล็อกอินหน้าเว็บ
-เปิด console access ทิ้งไว้คือเพิ่มช่องโจมตีเปล่าๆ
-
-> ถ้าเจอ Event `SyncLoadBalancerFailed` ที่มี `UnauthorizedOperation` ตอน **สร้าง** CLB
-> บางบัญชีต้องมีสิทธิ์ฝั่ง tag service เพิ่มถึงจะแนบ tag ตอนสร้างได้ ลองเพิ่ม
-> `tag:AddResourceTag` `tag:DescribeResourceTagsByResourceIds` `tag:GetTags`
-
-ไฟล์ policy พร้อมใช้อยู่ใน [`deploy/cam/`](deploy/cam/)
+> `UnauthorizedOperation` ตอน **สร้าง** CLB — บางบัญชีต้องมีสิทธิ์ฝั่ง tag ด้วยถึงจะ
+> แนบ tag ตอนสร้างได้ ลองเพิ่ม `tag:AddResourceTag`
+> `tag:DescribeResourceTagsByResourceIds` `tag:GetTags`
 
 #### ป้องกันคนแก้ CLB ผ่านหน้าเว็บ
 
-CLB ที่ controller ดูแลถูกกำหนดโดย Kubernetes — การไปแก้บน console จะถูก reconcile
-ทับกลับภายใน `--resync-period` (default 10 นาที) อยู่แล้ว ซึ่งทำให้เกิดสภาพที่แย่กว่าคือ
-คนแก้แล้วเห็นว่าได้ผล เดินจากไป แล้วมันย้อนกลับเองทีหลังโดยไม่มีใครรู้
+CLB ที่ controller ดูแลถูกกำหนดโดย Kubernetes การไปแก้บน console จะถูก reconcile
+ทับกลับอยู่แล้ว ซึ่งให้สภาพที่แย่กว่าคือคนแก้เห็นว่าได้ผล เดินจากไป
+แล้วมันย้อนกลับเองทีหลังโดยไม่มีใครรู้
 
-[`deploy/cam/deny-console-edit.json`](deploy/cam/deny-console-edit.json) ปิดช่องนั้นตั้งแต่ต้นทาง
-โดย **deny** action ที่เป็นการแก้ไข เฉพาะ CLB ที่มี tag `k8s-managed-by=k3s-tencent-clb-controller`
-
-```
-ผูกกับ:     user/group ของคนทั่วไป
-ห้ามผูกกับ:  sub-user ของ controller (ไม่งั้น controller ทำงานไม่ได้)
-```
-
-ใน CAM **deny ชนะ allow เสมอ** แม้ user จะมี `AdministratorAccess` ก็ยังแก้ไม่ได้
-และเงื่อนไขผูกกับ tag ทำให้ CLB ตัวอื่นในบัญชีเดียวกันยังแก้ได้ตามปกติ
-
-**สองชั้นนี้ครอบคนละเรื่อง — ใช้คู่กัน**
+สามชั้นนี้ครอบคนละเรื่อง ใช้ร่วมกัน:
 
 | กลไก | กันอะไร | ต้องตั้งค่าไหม |
 |---|---|---|
-| `clb.tencentcloud.com/delete-protection` | กัน **ลบ** CLB (เป็น `DeleteProtect` ของ Tencent เอง) | ไม่ — **เปิดเป็นค่าเริ่มต้น** |
-| `deploy/cam/deny-console-edit.json` | กัน **แก้ไข** listener / target / attribute | ต้องผูก policy เอง |
-| resync ทุก `--resync-period` (default 10 นาที) | **ดึงกลับ** สิ่งที่ถูกแก้จาก console | ไม่ |
+| `delete-protection` | **ลบ** CLB | ไม่ — เปิดเป็นค่าเริ่มต้น |
+| [`deploy/cam/deny-console-edit.json`](deploy/cam/deny-console-edit.json) | **แก้** listener / target / attribute | ผูก policy กับ user/group ของคนเอง |
+| resync ทุก 10 นาที | **ดึงกลับ** สิ่งที่ถูกแก้ไปแล้ว | ไม่ |
 
-delete-protection ครอบแค่การลบ ไม่ได้ครอบการแก้ listener — ถ้าอยากกันทั้งสองอย่างต้องใช้ทั้งคู่
+deny policy ผูกกับคนทั่วไปเท่านั้น **ห้ามผูกกับ sub-user ของ controller** ไม่งั้น
+controller ทำงานไม่ได้ ใน CAM deny ชนะ allow เสมอแม้ user จะมี `AdministratorAccess`
+และเงื่อนไขผูกกับ tag `k8s-managed-by` ทำให้ CLB ตัวอื่นในบัญชียังแก้ได้ตามปกติ
 
-> **CLB API ไม่มี "modification protection" ให้เปิด** — `AttributeFlags` รับแค่
+> การรองรับ tag condition ต่างกันไปในแต่ละ product — ล็อกอินด้วย user จริงหนึ่งคน
+> แล้วลองแก้ listener ต้องขึ้น error สิทธิ์ ถึงจะเชื่อว่าใช้ได้
+
+> **ลบ Service = สั่งให้ CLB หายไป** controller จะปิด delete protection ให้เอง
+> (Event `ClearingDeleteProtection`) แล้วค่อยลบ ถ้าไม่ทำแบบนี้ `DeleteLoadBalancer`
+> จะล้มเหลว finalizer ไม่ถูกปลด แล้ว Service ค้าง `Terminating` ตลอดกาล
+> protection มีไว้กันคนพลาดจาก console — Service คือ source of truth
+
+> **CLB API ไม่มี "modification protection" ให้เปิด** `AttributeFlags` รับแค่
 > `DeleteProtect`, `UserInVisible`, `BlockStatus`, `NoLBNat`, `BanStatus`,
-> `ShiftupFlag`, `Stop` ส่วน `DescribeLBOperateProtect` (操作保护) **อ่านได้อย่างเดียว
-> ไม่มี API ให้เขียน** สิ่งที่ `service.cloud.tencent.com/modification-protection`
-> ของ TKE ทำ คือ CCM ตรวจเจอการแก้แล้วดึงกลับเอง ไม่ใช่ธงบนคลาวด์ —
-> รีโปนี้ให้ผลเดียวกันด้วย resync บวก CAM deny policy ที่กันตั้งแต่แรกเลย
-> ซึ่งแข็งแรงกว่า เพราะการแก้ถูกปฏิเสธทันทีแทนที่จะถูกดึงกลับทีหลัง
-
-> ตอนลบ Service **controller จะปิด delete protection ให้เองแล้วค่อยลบ CLB**
-> พร้อม Event `ClearingDeleteProtection` ถ้าไม่ทำแบบนี้ `DeleteLoadBalancer` จะล้มเหลว
-> finalizer ไม่ถูกปลด แล้ว Service ค้าง `Terminating` ตลอดกาล
-> เจตนาของ protection คือกันคนพลาดจาก console ส่วน Service คือ source of truth
-
-> การรองรับ tag condition ต่างกันไปในแต่ละ product — ทดสอบด้วย user จริงหนึ่งคน
-> ก่อนเชื่อว่าใช้ได้ วิธีทดสอบ: ล็อกอินด้วย user นั้นแล้วลองแก้ listener ต้องขึ้น error สิทธิ์
+> `ShiftupFlag`, `Stop` ส่วน `DescribeLBOperateProtect` อ่านได้อย่างเดียว
+> ที่ TKE เรียก `modification-protection` คือ CCM ตรวจเจอแล้วดึงกลับเอง ไม่ใช่ธง
+> บนคลาวด์ — resync บวก deny policy ให้ผลเดียวกันและกันตั้งแต่ต้นทางด้วย
 
 ### 2. Deploy
 
-`deploy/manifests.yaml` **ไม่มีค่าที่ต้องแก้ก่อน apply** — ค่าที่ต่างกันในแต่ละคลัสเตอร์
-อยู่ใน ConfigMap/Secret ที่สร้างแยก จึง `apply` ซ้ำได้ตลอดโดยไม่ทับของเดิม
-
-**วิธีที่ง่ายที่สุด — คำสั่งเดียวจบ**
+`deploy/manifests.yaml` ไม่มีค่าที่ต้องแก้ก่อน apply — ค่าที่ต่างกันในแต่ละคลัสเตอร์
+อยู่ใน ConfigMap/Secret ที่สร้างแยก apply ซ้ำได้ตลอดโดยไม่ทับของเดิม
 
 ```bash
 ./deploy/install.sh --cluster-id th1 --region ap-bangkok --vpc-id vpc-xxxxxxxx
 ```
-
 ```powershell
 .\deploy\install.ps1 -ClusterId th1 -Region ap-bangkok -VpcId vpc-xxxxxxxx
 ```
 
-สคริปต์จะ validate ค่า, สร้าง ConfigMap + Secret, apply manifests, restart แล้วโชว์ log ให้
-รันซ้ำได้เสมอ — **Secret เดิมจะไม่ถูกแตะ** เว้นแต่สั่ง `--rotate-credentials` / `-RotateCredentials`
+สคริปต์ validate ค่า สร้าง ConfigMap + Secret, apply, restart แล้วโชว์ log ให้
+รันซ้ำได้เสมอ — Secret เดิมไม่ถูกแตะเว้นแต่สั่ง `--rotate-credentials`
 
-**หรือทำเองทีละขั้น**
+<details>
+<summary>ทำเองทีละขั้น</summary>
 
 ```bash
 kubectl -n kube-system create configmap clb-controller-config \
@@ -270,58 +224,48 @@ kubectl -n kube-system create secret generic tencentcloud-credentials \
 
 kubectl apply -f deploy/manifests.yaml
 ```
+</details>
 
-> key ของ ConfigMap/Secret ต้องเป็นชื่อ env var ที่ถูกต้อง (ไม่มีขีดกลาง) เพราะ Deployment
-> ใช้ `envFrom` — key อย่าง `secret-id` จะถูก kubelet ข้ามทิ้งพร้อม warning event
-> แล้ว controller จะบอกว่าหา credential ไม่เจอ
+สามเรื่องที่ทำให้พังบ่อย:
 
-`TENCENTCLOUD_REGION` **ต้องตรงกับภูมิภาคที่ node อยู่จริง** ถ้าผิด controller จะไปสร้าง CLB
-คนละภูมิภาคกับ node แล้วหา CVM ไม่เจอ ขึ้น Event `NodesNotResolvable` ทุก node
-
-`envFrom` ถูกอ่านตอน pod start เท่านั้น — **แก้ ConfigMap หรือหมุนคีย์แล้วต้อง**
-`kubectl -n kube-system rollout restart deploy/clb-controller` (install script ทำให้อัตโนมัติ)
+- key ของ ConfigMap/Secret ต้องเป็นชื่อ env var ที่ถูกต้อง (ไม่มีขีดกลาง) เพราะใช้
+  `envFrom` — key อย่าง `secret-id` จะถูก kubelet ข้ามทิ้งเงียบๆ
+- `TENCENTCLOUD_REGION` ต้องตรงกับภูมิภาคที่ node อยู่จริง ผิดแล้วจะสร้าง CLB คนละที่
+  กับ node แล้วขึ้น `NodesNotResolvable` ทุก node
+- `envFrom` อ่านตอน pod start เท่านั้น — แก้ ConfigMap หรือหมุนคีย์แล้วต้อง
+  `rollout restart` (install script ทำให้อัตโนมัติ)
 
 ถ้า ConfigMap ไม่มี pod จะไม่ start เลย ขึ้น `CreateContainerConfigError` — ตั้งใจให้พังดังๆ
 ดีกว่ารันด้วยค่า placeholder แล้วไปสร้าง CLB ผิดที่
 
-#### เรื่อง `--cluster-id`
+#### `--cluster-id` จำเป็นแค่ไหน
 
-k3s ไม่มี cluster ID ในตัวให้ใช้ (ต่างจาก TKE ที่มี `cls-xxxxx`) จึงต้องกำหนดเอง
-มันถูกใช้สองที่: tag `k8s-cluster-id` บน CLB และชื่อ CLB
+k3s ไม่มี cluster ID ในตัว (ต่างจาก TKE ที่มี `cls-xxxxx`) จึงต้องกำหนดเอง ใช้เป็น
+tag `k8s-cluster-id` บน CLB และเป็นส่วนหนึ่งของชื่อ CLB
 
-| สถานการณ์ | จำเป็นไหม |
-|---|---|
-| คลัสเตอร์เดียวใน Tencent account | ไม่จำเป็นเชิงตรรกะ แต่โค้ดบังคับให้ระบุ |
-| ≥2 คลัสเตอร์ใช้ account เดียวกัน | **จำเป็นมาก** |
-
-เหตุผลของกรณีหลัง: `FindByTags` แมตช์จาก `{cluster-id, service, managed-by}`
-ถ้าสองคลัสเตอร์มี `kube-system/traefik` เหมือนกัน**และ cluster-id ตรงกัน**
-คลัสเตอร์ A จะ adopt CLB ของ B มาเป็นของตัวเอง แล้ว reconcile target ไปชี้ node ตัวเอง
-— traffic ของ B ตายทันทีโดยไม่มีอะไรเตือน
+คลัสเตอร์เดียวใน account ไม่จำเป็นเชิงตรรกะ แต่โค้ดบังคับให้ระบุ — **ตั้งแต่ 2
+คลัสเตอร์ขึ้นไปใน account เดียวกันคือเรื่องคอขาดบาดตาย** เพราะ `FindByTags` แมตช์จาก
+`{cluster-id, service, managed-by}` ถ้าสองคลัสเตอร์มี `kube-system/traefik` เหมือนกัน
+และ cluster-id ตรงกัน คลัสเตอร์ A จะ adopt CLB ของ B มาแล้ว reconcile target ไปชี้
+node ตัวเอง — traffic ของ B ตายทันทีโดยไม่มีอะไรเตือน
 
 ### 3. ย้าย Traefik จาก klipper มาที่ CLB
 
-`spec.loadBalancerClass` ทำสองอย่างพร้อมกัน: บอก ServiceLB (klipper) ให้ปล่อย Service นี้ไป
-และบอก controller ตัวนี้ว่าต้องรับผิดชอบ ตาม API contract ของ Kubernetes เอง
+`spec.loadBalancerClass` ทำสองอย่างพร้อมกัน: บอก klipper ให้ปล่อย Service นี้ไป
+และบอก controller ตัวนี้ว่าต้องรับผิดชอบ แต่ field นี้ **immutable** — เติม class ลง
+Service ที่เป็น LoadBalancer อยู่แล้วไม่ได้ (`helm upgrade` จะ error `field is
+immutable`) ต้องให้มันผ่านการเป็น non-LoadBalancer ก่อนหนึ่งจังหวะ
 
-> "Any default load balancer implementation (e.g. cloud providers) should **ignore**
-> Services that set this field." — `k8s.io/api/core/v1` `ServiceSpec.LoadBalancerClass`
-
-**แต่ field เดียวกันนั้นบอกด้วยว่า "Once set, it can not be changed"** —
-เติม class ลง Service ที่เป็น type LoadBalancer อยู่แล้วไม่ได้ `helm upgrade` จะ error
-`field is immutable` ต้องให้ Service ผ่านการเป็น non-LoadBalancer ก่อนหนึ่งจังหวะ
-
-**ลำดับสำคัญ: patch ก่อน แล้วค่อย apply HelmChartConfig**
-ถ้าสลับกัน helm-controller จะพยายาม patch class ลง Service เดิมแล้วโดนปฏิเสธ ทำให้ job พังค้าง
+**patch ก่อน แล้วค่อย apply HelmChartConfig** สลับลำดับแล้ว helm-controller จะพยายาม
+patch class ลง Service เดิมแล้วโดนปฏิเสธ job พังค้าง
 
 ```bash
-# 0. เช็คก่อนว่า controller พร้อมรับช่วง — ถ้ายังไม่รัน จะเหลือสภาพที่ klipper ก็ไปแล้ว
+# 0. เช็คว่า controller พร้อมรับช่วง — ถ้ายังไม่รัน จะเหลือสภาพที่ klipper ก็ไปแล้ว
 #    ของเราก็ไม่มา ซึ่งแย่กว่าตอนเริ่ม
-kubectl -n kube-system get deploy clb-controller
 kubectl -n kube-system logs deploy/clb-controller --tail=20   # ต้องเห็น "starting clb controller"
 kubectl -n kube-system get svc traefik -o yaml > /tmp/traefik-svc-backup.yaml
 
-# 1. ปลด LoadBalancer ออก — apiserver จะ wipe loadBalancerClass/nodePort/healthCheckNodePort ให้เอง
+# 1. ปลด LoadBalancer ออก — apiserver จะ wipe class/nodePort/healthCheckNodePort ให้เอง
 kubectl -n kube-system patch svc traefik -p '{"spec":{"type":"ClusterIP"}}'
 
 # 2. กลับมาพร้อม class
@@ -337,18 +281,17 @@ kubectl -n kube-system patch svc traefik -p '{
 kubectl apply -f deploy/traefik-helmchartconfig.yaml
 ```
 
-วิธีสองจังหวะนี้ทำให้ **ClusterIP และ DNS ไม่หาย** ต่างจากการ `delete svc` แล้วรอสร้างใหม่
-แต่ `nodePort` จะถูก re-allocate เลขใหม่ — ถ้ามี security group หรือ firewall rule ที่
-hardcode nodePort เดิมไว้ ต้องตามไปแก้ (controller อ่านค่าใหม่เองอยู่แล้ว)
+สองจังหวะนี้ทำให้ ClusterIP กับ DNS ไม่หาย ต่างจากการ `delete svc` แล้วสร้างใหม่
+แต่ `nodePort` จะได้เลขใหม่ — ถ้ามี firewall rule ที่ hardcode เลขเดิมไว้ต้องตามไปแก้
 
 **ยืนยัน**
 
 ```bash
 kubectl -n kube-system get svc traefik -o custom-columns=\
-'CLASS:.spec.loadBalancerClass,POLICY:.spec.externalTrafficPolicy,HCPORT:.spec.healthCheckNodePort,EXTIP:.status.loadBalancer.ingress[0].ip'
+'CLASS:.spec.loadBalancerClass,POLICY:.spec.externalTrafficPolicy,HCPORT:.spec.healthCheckNodePort,ADDR:.status.loadBalancer.ingress[0]'
 
 kubectl -n kube-system get pods -l svccontroller.k3s.cattle.io/svcname=traefik   # ต้องว่าง
-kubectl -n kube-system describe svc traefik | tail -20   # EnsuringLoadBalancer → EnsuredLoadBalancer
+kubectl -n kube-system describe svc traefik | tail -20   # ต้องจบที่ EnsuredLoadBalancer
 ```
 
 **Rollback** — ลบ class ตรงๆ ไม่ได้ ต้องใช้ท่าเดิมกลับทาง
@@ -359,141 +302,95 @@ kubectl -n kube-system patch svc traefik -p '{"spec":{"type":"LoadBalancer"}}'
 kubectl delete helmchartconfig -n kube-system traefik
 ```
 
-#### `--disable=servicelb` อย่างเดียวไม่พอ
-
-มันหยุด klipper ได้จริง แต่ controller ตัวนี้เช็ค `loadBalancerClass` ก่อนจะรับผิดชอบ Service
-Service ที่ไม่มี class จะถูกข้ามทั้งคู่ แล้ว EXTERNAL-IP ค้าง `<pending>` ตลอด — **ยังไงก็ต้องตั้ง class**
-
-และอย่าใช้ `--disable-cloud-controller` เพราะจะเสีย node metadata handling ของ k3s ไปด้วย
-
-## Container image
-
-Image ถูก build และ push ขึ้น GHCR อัตโนมัติเมื่อ push git tag ที่ขึ้นต้นด้วย `v`
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-จะได้ image หลาย tag พร้อมกัน (`linux/amd64` + `linux/arm64`):
-
-```
-ghcr.io/drsaluml/k3s-tencent-clb-controller:0.1.0
-ghcr.io/drsaluml/k3s-tencent-clb-controller:0.1
-ghcr.io/drsaluml/k3s-tencent-clb-controller:latest
-```
-
-> **image tag ไม่มี `v` นำหน้า** — git tag คือ `v0.1.0` แต่ `docker/metadata-action`
-> ตัด `v` ออกจาก `{{version}}` ดังนั้น `:v0.1.0` จะ pull ไม่เจอ ต้องใช้ `:0.1.0`
-
-> tag `:<major>` (เช่น `:1`) จะถูกสร้างเมื่อออกจาก 0.x แล้วเท่านั้น
-> เพราะ semver ถือว่า 0.x ยัง breaking ได้ทุก minor
-
-**ครั้งแรกที่ push ต้องตั้งค่าสองอย่าง:**
-
-1. Settings → Actions → General → Workflow permissions → ต้องไม่ใช่ read-only
-   (workflow ขอ `packages: write` ไว้แล้ว แต่ถ้าตั้ง repo เป็น read-only จะถูก override)
-2. หลัง push สำเร็จ package จะเป็น **private** โดย default —
-   ถ้าอยากให้ `kubectl` ดึงได้โดยไม่ต้องมี imagePullSecret ให้ไปที่
-   หน้า package → Package settings → Change visibility → Public
-
-ไม่ต้องสร้าง PAT — workflow ใช้ `GITHUB_TOKEN` ที่ Actions ให้มาอยู่แล้ว
-
-ถ้า package เป็น private ต้องสร้าง pull secret:
-
-```bash
-kubectl -n kube-system create secret docker-registry ghcr \
-  --docker-server=ghcr.io \
-  --docker-username=<github-user> \
-  --docker-password=<PAT ที่มีสิทธิ์ read:packages>
-```
-แล้วเพิ่ม `imagePullSecrets: [{name: ghcr}]` ใน Deployment
-
-### Build เองในเครื่อง
-
-```bash
-docker build --build-arg VERSION=dev -t clb-controller:dev .
-```
-
-ตรวจว่า image ขึ้น GHCR แล้วหรือยังก่อน rollout (ไม่ต้อง login ถ้า package เป็น public):
-
-```bash
-docker manifest inspect ghcr.io/drsaluml/k3s-tencent-clb-controller:0.1.0 >/dev/null && echo ok
-```
-
-เวอร์ชันถูก stamp เข้า binary และถูก log ตอน start เสมอ —
-เป็นข้อมูลแรกที่ต้องการเวลา debug ว่า pod ที่รันอยู่คือ build ไหน
-
-## CI
-
-| Workflow | ทำงานเมื่อ | ทำอะไร |
-|---|---|---|
-| `.github/workflows/ci.yml` | push `main`, ทุก PR | gofmt / vet / build / `go test -race` + ลอง build image ทั้งสอง arch (ไม่ push) |
-| `.github/workflows/release.yml` | push tag `v*`, กดเอง | รัน CI ให้ผ่านก่อน แล้ว build + push ขึ้น GHCR พร้อม SBOM/provenance และสร้าง GitHub Release |
+> `--disable=servicelb` อย่างเดียวไม่พอ — มันหยุด klipper ได้จริง แต่ controller ตัวนี้
+> เช็ค `loadBalancerClass` ก่อนรับผิดชอบ Service ที่ไม่มี class จะถูกข้ามทั้งคู่แล้ว
+> EXTERNAL-IP ค้าง `<pending>` ตลอด และอย่าใช้ `--disable-cloud-controller`
+> เพราะจะเสีย node metadata handling ของ k3s ไปด้วย
 
 ## Annotations
 
+บน Service — ทุกตัวใช้ prefix `clb.tencentcloud.com/`
+
 | Annotation | ความหมาย |
 |---|---|
-| `clb.tencentcloud.com/loadbalancer-id` | controller เขียนเอง — id ของ CLB ที่สร้างให้ |
-| `clb.tencentcloud.com/existing-loadbalancer-id` | adopt CLB ที่มีอยู่ และ **ไม่ลบ** ตอน Service หาย |
-| `clb.tencentcloud.com/subnet-id` | subnet สำหรับ internal LB |
-| `clb.tencentcloud.com/address-ip-version` | `IPV4` / `IPV6FullChain` / `IPv6Nat64` |
-| `clb.tencentcloud.com/sla-type` | LCU spec (เว้นว่าง = shared) |
-| `clb.tencentcloud.com/internet-charge-type` | `TRAFFIC_POSTPAID_BY_HOUR` / `BANDWIDTH_POSTPAID_BY_HOUR` |
-| `clb.tencentcloud.com/internet-max-bandwidth-out` | Mbps |
-| `clb.tencentcloud.com/scheduler` | `WRR` / `LEAST_CONN` / `IP_HASH` |
-| `clb.tencentcloud.com/session-expire-time` | วินาที |
-| `clb.tencentcloud.com/delete-protection` | **default `"true"`** — กันลบพลาดจาก console ใส่ `"false"` เพื่อปิด (กันแก้ไขใช้ CAM deny policy) |
-| `clb.tencentcloud.com/security-groups` | `sg-aaa,sg-bbb` ผูก SG กับตัว CLB (สูงสุด 5 ตัว, ลำดับ = ลำดับความสำคัญ) |
-| `clb.tencentcloud.com/pass-to-target` | `"true"` ให้ CLB ส่ง traffic ถึง node ได้โดยไม่ต้องผ่าน SG ของ node |
-| `clb.tencentcloud.com/health-check-protocol` | `TCP` / `HTTP` — override ค่าที่ controller เลือกให้ |
-| `clb.tencentcloud.com/health-check-path` | ใช้เมื่อ health check เป็น HTTP |
-| `clb.tencentcloud.com/health-check-domain` | Host header ของ HTTP health check (default `<svc>.<ns>`) — CLB บังคับให้มีค่า |
-| `clb.tencentcloud.com/health-check-interval` | วินาที |
-| `clb.tencentcloud.com/health-check-timeout` | วินาที |
-
-ทุกตัวใช้ prefix `clb.tencentcloud.com/` ของเราเอง ไม่รับชื่อของ CCM/TKE เป็น alias
-แต่**รูปแบบค่าเหมือนกัน** ตัวที่มีของเทียบตรงๆ คือ
-
-| ของเรา | ของ TKE ([เอกสาร](https://www.tencentcloud.com/ind/document/product/457/39142)) |
-|---|---|
-| `clb.tencentcloud.com/security-groups` | `service.cloud.tencent.com/security-groups` |
-| `clb.tencentcloud.com/pass-to-target` | `service.cloud.tencent.com/pass-to-target` |
-
-ย้ายมาจาก TKE จึงแก้แค่ prefix ค่าเดิมใช้ต่อได้เลย
+| `loadbalancer-id` | controller เขียนเอง — id ของ CLB ที่สร้างให้ |
+| `existing-loadbalancer-id` | adopt CLB ที่มีอยู่ และ **ไม่ลบ** ตอน Service หาย |
+| `subnet-id` | subnet สำหรับ internal LB |
+| `address-ip-version` | `IPV4` / `IPV6FullChain` / `IPv6Nat64` |
+| `sla-type` | LCU spec (เว้นว่าง = shared) |
+| `internet-charge-type` | `TRAFFIC_POSTPAID_BY_HOUR` / `BANDWIDTH_POSTPAID_BY_HOUR` |
+| `internet-max-bandwidth-out` | Mbps |
+| `scheduler` | `WRR` / `LEAST_CONN` / `IP_HASH` |
+| `session-expire-time` | วินาที |
+| `delete-protection` | **default `"true"`** ใส่ `"false"` เพื่อปิด |
+| `security-groups` | `sg-aaa,sg-bbb` ผูก SG กับตัว CLB (สูงสุด 5 ตัว ลำดับ = ลำดับความสำคัญ) |
+| `pass-to-target` | `"true"` ให้ CLB ถึง nodePort ได้โดยไม่ผ่าน SG ของ node |
+| `health-check-protocol` | `TCP` / `HTTP` — override ค่าที่ controller เลือกให้ |
+| `health-check-path` | ใช้เมื่อ health check เป็น HTTP |
+| `health-check-domain` | Host header ของ HTTP health check (default `<svc>.<ns>`) — CLB บังคับให้มีค่า |
+| `health-check-interval` / `health-check-timeout` | วินาที |
 
 บน Node:
 
 | Annotation | ความหมาย |
 |---|---|
-| `clb.tencentcloud.com/instance-id` | ระบุ CVM instance id เอง ข้ามการ lookup ผ่าน CVM API |
+| `instance-id` | ระบุ CVM instance id เอง ข้ามการ lookup ผ่าน CVM API |
+
+ไม่รับชื่อ annotation ของ CCM/TKE เป็น alias แต่รูปแบบค่าเหมือนกัน ย้ายมาจาก TKE
+([เอกสาร](https://www.tencentcloud.com/ind/document/product/457/39142)) แก้แค่ prefix:
+`service.cloud.tencent.com/security-groups` และ `.../pass-to-target`
+→ `clb.tencentcloud.com/...`
+
+## Container image
+
+push git tag ที่ขึ้นต้นด้วย `v` แล้ว CI จะ build + push ขึ้น GHCR ให้เอง
+ทั้ง `linux/amd64` และ `linux/arm64`
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+# → ghcr.io/drsaluml/k3s-tencent-clb-controller:0.1.0 / :0.1 / :latest
+```
+
+> **image tag ไม่มี `v` นำหน้า** — `docker/metadata-action` ตัดออก `:v0.1.0` จึง
+> pull ไม่เจอ ต้องใช้ `:0.1.0` ส่วน `:<major>` จะมีเมื่อออกจาก 0.x แล้ว
+
+ครั้งแรกต้องตั้งสองอย่าง (ไม่ต้องสร้าง PAT — workflow ใช้ `GITHUB_TOKEN`):
+Workflow permissions ต้องไม่ใช่ read-only, และ package ที่ push ครั้งแรกจะเป็น
+private ให้เปลี่ยนเป็น public ที่ Package settings → Change visibility
+ถ้าไม่อยากใช้ imagePullSecret
+
+build เองในเครื่อง: `docker build --build-arg VERSION=dev -t clb-controller:dev .`
+เวอร์ชันถูก stamp เข้า binary และ log ตอน start เสมอ — เป็นข้อมูลแรกที่ต้องการ
+เวลา debug ว่า pod ที่รันอยู่คือ build ไหน
+
+| Workflow | ทำงานเมื่อ | ทำอะไร |
+|---|---|---|
+| `ci.yml` | push `main`, ทุก PR | gofmt / vet / build / `go test -race` + ลอง build image สอง arch (ไม่ push) |
+| `release.yml` | push tag `v*`, กดเอง | รัน CI ให้ผ่านก่อน แล้ว push ขึ้น GHCR พร้อม SBOM/provenance และสร้าง Release |
 
 ## สิ่งที่จงใจไม่ทำ
 
 - **L7 บน CLB (HTTP/HTTPS listener + cert)** — Traefik terminate TLS อยู่แล้ว
-  การทำ L7 สองที่ทำให้ debug ยากและ cert หลุด sync
+  ทำ L7 สองที่ทำให้ debug ยากและ cert หลุด sync
 - **Direct-to-pod (ENI / VPC-CNI)** — เป็นของ TKE ไม่ใช่ K3s บน CVM ธรรมดา
 - **Node / Route controller** — k3s จัดการเองอยู่แล้ว
 - **Ingress resource** — ไม่แตะ
-- **`cleanup-policy: retain`** — ลบ Service = ลบ CLB เสมอ ไม่มีทางเลือกให้เก็บไว้
-  พิจารณาแล้วไม่ทำ (2026-08-09) เพราะ CLB ที่ไม่มีเจ้าของยังคิดเงินต่อและยังไม่มี
-  Orphan GC มาตามเก็บ ถ้าต้องการ CLB ที่ไม่ถูกลบให้ใช้ `existing-loadbalancer-id`
-  ซึ่ง adopt ของที่สร้างเองไว้ก่อน แล้ว controller จะไม่ลบตอน Service หายอยู่แล้ว
+- **`cleanup-policy: retain`** — ลบ Service = ลบ CLB เสมอ พิจารณาแล้วไม่ทำ
+  (2026-08-09) เพราะ CLB ไร้เจ้าของยังคิดเงินและยังไม่มี Orphan GC มาเก็บ
+  ถ้าต้องการ CLB ที่ไม่ถูกลบให้สร้างเองแล้ว adopt ด้วย `existing-loadbalancer-id`
 
 ## หมายเหตุเชิงเทคนิค
 
-**CLB API ทุกตัวที่เขียนเป็น async** — คืน `RequestId` ทันทีแต่งานยังไม่เสร็จ
-ต้อง poll `DescribeTaskStatus` จนได้ status 0 ถ้ายิงคำสั่งถัดไปเลยจะเจอ error
-ตระกูล `IncorrectStatus` เพราะ CLB ล็อกตัวเองอยู่ — จัดการใน `internal/clb/task.go`
+**CLB API ทุกตัวที่เขียนเป็น async** คืน `RequestId` ทันทีแต่งานยังไม่เสร็จ ต้อง poll
+`DescribeTaskStatus` จนได้ status 0 ยิงคำสั่งถัดไปเลยจะเจอ `IncorrectStatus`
+เพราะ CLB ล็อกตัวเองอยู่ — อยู่ใน `internal/clb/task.go`
 
-**K3s ตั้ง `providerID = k3s://<node-name>`** ซึ่งใช้หา CVM ไม่ได้
-แต่ `RegisterTargets` ต้องการ `ins-xxxx` — `internal/node/resolver.go` จึง lookup
-ผ่าน `cvm:DescribeInstances` ด้วย private IP แล้ว cache ไว้
+**k3s ตั้ง `providerID = k3s://<node-name>`** ซึ่งใช้หา CVM ไม่ได้ แต่ `RegisterTargets`
+ต้องการ `ins-xxxx` — `internal/node/resolver.go` จึง lookup ด้วย private IP แล้ว cache ไว้
 
-**Ownership 3 ชั้น** — annotation (fast path) + tag บน CLB (source of truth) + finalizer
-ชั้น tag คือสิ่งที่กู้เคส "สร้าง CLB สำเร็จแล้ว crash ก่อนเขียน annotation"
-ไม่งั้นได้ CLB ผีที่คิดเงินไปเรื่อยๆ (มี test ครอบไว้)
+**Ownership 3 ชั้น** annotation (fast path) + tag บน CLB (source of truth) + finalizer
+ชั้น tag คือสิ่งที่กู้เคส "สร้าง CLB สำเร็จแล้ว crash ก่อนเขียน annotation" ไม่งั้นได้
+CLB ผีที่คิดเงินไปเรื่อยๆ (มี test ครอบไว้)
 
 ## Troubleshooting
 
@@ -506,97 +403,89 @@ kubectl -n kube-system logs deploy/clb-controller -f
 
 | Event | ความหมาย / วิธีแก้ |
 |---|---|
-| `InvalidConfiguration` | annotation ผิดรูป หรือ port ยังไม่ได้ nodePort — controller จะลองใหม่ทุกนาที ไม่สร้าง CLB ด้วยค่ามั่ว |
-| `NodesNotResolvable` | หา CVM ที่ตรงกับ node ไม่เจอ ถ้าเป็นบาง node จะข้ามไป ถ้าเป็นทุก node จะหยุดและ **ไม่ถอน target เดิมทิ้ง** แก้ด้วย annotation `clb.tencentcloud.com/instance-id` บน node |
-| `SyncLoadBalancerFailed` | error จาก Tencent API ดู log ประกอบ — ถ้าเป็น auth/quota controller จะ backoff 5 นาทีแทน retry รัว |
-| `SyncLoadBalancerFailed` + `UnauthorizedOperation` | **สิทธิ์ CAM ขาด ไม่ใช่บั๊ก** — ชื่อ action อยู่ในข้อความ error เลย ไปเพิ่มใน policy ตัวจริงบน console (แก้ไฟล์ในรีโปไม่พอ) แล้ว controller retry เอง |
-| `BackendSecurityGroupBypassed` | เปิด `pass-to-target` ไว้แต่ไม่ได้ผูก SG ให้ CLB — nodePort เปิดรับทุกคนที่ยิงถึง CLB ได้ |
-| `EnsuredLoadBalancer` | ทุกอย่าง sync แล้ว |
+| `InvalidConfiguration` | annotation ผิดรูป หรือ port ยังไม่ได้ nodePort — ลองใหม่ทุกนาที ไม่สร้าง CLB ด้วยค่ามั่ว |
+| `NodesNotResolvable` | หา CVM ที่ตรงกับ node ไม่เจอ บาง node จะข้ามไป ทุก node จะหยุดและ **ไม่ถอน target เดิม** แก้ด้วย annotation `instance-id` บน node |
+| `SyncLoadBalancerFailed` | error จาก Tencent API — ถ้าเป็น auth/quota จะ backoff 5 นาทีแทน retry รัว |
+| ↳ พร้อม `UnauthorizedOperation` | **สิทธิ์ CAM ขาด ไม่ใช่บั๊ก** ชื่อ action อยู่ในข้อความ error ไปเพิ่มใน policy ตัวจริงบน console |
+| `BackendSecurityGroupBypassed` | เปิด `pass-to-target` แต่ไม่ได้ผูก SG ให้ CLB — nodePort รับทุกคนที่ยิงถึง CLB ได้ |
+| `EnsuredLoadBalancer` | sync แล้ว |
 
-**Service ค้าง Terminating** — แปลว่าลบ CLB ไม่สำเร็จ finalizer จึงไม่ถูกปลด
-ดู Event `DeleteLoadBalancerFailed` ก่อน เคสที่พบบ่อยคือ CLB เป็นแบบ prepaid
-ซึ่งลบผ่าน API ไม่ได้ ต้องลบมือบน console แล้ว controller จะปล่อย finalizer เอง
-ถ้าจำเป็นจริงๆ ปลดมือด้วย `kubectl patch svc ... -p '{"metadata":{"finalizers":null}}'`
-แต่ต้องไปลบ CLB เองด้วย ไม่งั้นเหลือค้างคิดเงิน
+**Service ค้าง Terminating** = ลบ CLB ไม่สำเร็จ finalizer จึงไม่ถูกปลด ดู Event
+`DeleteLoadBalancerFailed` ก่อน เคสที่พบบ่อยคือ CLB เป็นแบบ prepaid ซึ่งลบผ่าน API
+ไม่ได้ ต้องลบมือบน console แล้ว controller จะปล่อย finalizer เอง ถ้าจำเป็นจริงๆ
+ปลดมือด้วย `kubectl patch svc ... -p '{"metadata":{"finalizers":null}}'` แต่ต้องไป
+ลบ CLB เองด้วย ไม่งั้นเหลือค้างคิดเงิน
 
-**EXTERNAL-IP ขึ้นแล้วแต่ต่อไม่ติด (connect timeout)** — CLB สร้างครบและ target ผูกแล้ว
-แต่ traffic ไม่ทะลุ สาเหตุที่พบบ่อยที่สุดคือ **security group ของ node บล็อก nodePort**
+**ต่อไม่ติด / connect timeout ทั้งที่ CLB มีที่อยู่แล้ว** — สาเหตุที่พบบ่อยที่สุดคือ
+security group ของ node บล็อก nodePort เพราะ traffic จาก CLB ไป backend ยังถูก SG
+ของ CVM ตรวจอยู่ตาม default เลือกทางแก้ทางใดทางหนึ่ง
 
-โดย default traffic จาก CLB ไป backend ยังถูก security group ของ CVM ตรวจอยู่
-มีสองทางแก้ เลือกทางใดทางหนึ่ง
+**ทาง ก. เปิด `30000-32767` TCP บน SG ของ node** ทุกตัว (ทำได้แค่บน console —
+controller ไม่มีสิทธิ์แก้ SG) ครอบ `healthCheckNodePort` ไปด้วยเพราะอยู่ในช่วงเดียวกัน
 
-**ทาง ก. เปิด nodePort บน SG ของ node** (ต้องทำบน console — controller ไม่มีสิทธิ์แก้ SG)
-
-| Port | ทำไม |
-|---|---|
-| `30000-32767` TCP | ช่วง nodePort ทั้งหมด (เลขเปลี่ยนทุกครั้งที่สร้าง Service ใหม่) |
-| `healthCheckNodePort` | อยู่ในช่วงเดียวกัน ถ้าเปิดทั้งช่วงก็ครอบคลุมแล้ว |
-
-**ทาง ข. ให้ CLB ข้าม SG ของ node ไปเลย** — controller สั่งได้เองจาก Service
-ไม่ต้องแตะ console และไม่ต้องเปิดช่วง port กว้างๆ ทิ้งไว้บน node
+**ทาง ข. ให้ CLB ข้าม SG ของ node ไปเลย** สั่งได้จาก Service ไม่ต้องแตะ console
+และไม่ต้องเปิดช่วง port กว้างทิ้งไว้
 
 ```yaml
 metadata:
   annotations:
     clb.tencentcloud.com/pass-to-target: "true"
-    # ย้ายด่านกรองมาไว้ที่ CLB แทน — ไม่ใส่ = ใครก็ตามที่ยิงถึง CLB ได้ ถึง nodePort ได้หมด
+    # ย้ายด่านกรองมาไว้ที่ CLB — ไม่ใส่ = ใครยิงถึง CLB ได้ ก็ถึง nodePort ได้หมด
     clb.tencentcloud.com/security-groups: "sg-xxxxxxxx"
 ```
 
-`pass-to-target` แปลว่า Tencent ตรวจแค่ SG ที่ผูกกับ **CLB** ไม่ตรวจ SG ของ CVM
-ปลายทางอีก ด่านกรองจึงเหลือชั้นเดียว — ถ้าเปิดโดยไม่ผูก SG ให้ CLB เท่ากับเปิด
-nodePort ให้ทุกคนที่เข้าถึง CLB ได้ controller จะเตือนด้วย Event
-`BackendSecurityGroupBypassed` เมื่อเจอสภาพนี้ แต่ยังทำตามที่สั่ง
+`pass-to-target` ทำให้ Tencent ตรวจแค่ SG ของ **CLB** ไม่ตรวจ SG ของ CVM ปลายทาง
+ด่านกรองจึงเหลือชั้นเดียว controller เตือนด้วย Event `BackendSecurityGroupBypassed`
+เมื่อเปิดโดยไม่ผูก SG แต่ยังทำตามที่สั่ง
 
-> ทั้งสอง annotation จะถูกจัดการ**ก็ต่อเมื่อใส่ไว้เท่านั้น** — ไม่ใส่แปลว่า
-> "ไม่เข้าไปยุ่ง" ไม่ใช่ "ตั้งเป็นค่าว่าง" ทำให้ CLB ที่ adopt มาด้วย
-> `existing-loadbalancer-id` ไม่ถูกถอด SG ทิ้งเงียบๆ ส่วนค่าว่าง
-> (`security-groups: ""`) คือการสั่งถอดทั้งหมดจริงๆ
+สองกับดักของ `security-groups`:
 
-แยกให้ชัดว่าเป็นฝั่งไหนก่อนแก้ — ยิงจากในคลัสเตอร์ ถ้าได้ผลแปลว่า k8s ปกติ เหลือแค่ SG:
+- **SG ของ CLB คนละบทบาทกับ SG ของ node** ของ CLB คุมว่าใครยิงเข้า CLB ได้
+  ของ node คุมว่าใครยิงเข้า node ได้ เอา SG ของ node มาผูกกับ CLB ถ้ามันไม่มีกฎเปิด
+  80/443 ให้คนนอก traffic จะตันทั้งเส้น ยิ่งเมื่อ `pass-to-target` เปิดอยู่
+  เพราะ SG ของ CLB คือด่านเดียวที่เหลือ
+- **ลบบรรทัด annotation ทิ้งไม่ได้ถอด SG ออก** ทั้งสองตัวถูกจัดการก็ต่อเมื่อใส่ไว้
+  เท่านั้น ไม่ใส่ = "ไม่เข้าไปยุ่ง" (กัน CLB ที่ adopt มาถูกถอด SG เงียบๆ)
+  ถอดจริงต้องสั่งด้วยค่าว่าง `security-groups: ""`
+
+แยกให้ชัดว่าปัญหาอยู่ฝั่งไหนก่อนแก้ ยิงจากในคลัสเตอร์ ถ้าได้ผลแปลว่า k8s ปกติ เหลือแค่ SG:
 
 ```bash
 kubectl run t --rm -i --restart=Never --image=curlimages/curl -- \
   curl -sS -o /dev/null -w '%{http_code}\n' --max-time 5 http://<NODE_IP>:<nodePort>/
 ```
 
-**Service ได้ IP จาก klipper แทน** — `spec.loadBalancerClass` ไม่ได้ถูกตั้ง
-เช็คด้วย `kubectl get svc traefik -o jsonpath='{.spec.loadBalancerClass}'`
-ถ้า Traefik มาจาก HelmChart addon ต้องแก้ผ่าน HelmChartConfig เท่านั้น
-แก้ Service ตรงๆ จะถูก reconcile ทับ
+**Service ได้ IP จาก klipper แทน** = `spec.loadBalancerClass` ไม่ได้ถูกตั้ง เช็คด้วย
+`kubectl get svc traefik -o jsonpath='{.spec.loadBalancerClass}'` ถ้า Traefik มาจาก
+HelmChart addon ต้องแก้ผ่าน HelmChartConfig เท่านั้น แก้ Service ตรงๆ จะถูก reconcile ทับ
 
 ## Development
 
 ```bash
-go build ./...
-go test ./...
+go build ./... && go test ./...
 ```
 
-Layer สำคัญ:
-
 ```
-internal/clb/       wrapper รอบ tencentcloud-sdk-go + async task polling + diff logic
-    diff.go         pure function ล้วน — จะสร้าง/แก้/ลบอะไรบ้าง (ที่นี่มี test เยอะสุด)
-    fake.go         CLB จำลอง in-memory สำหรับ test
-internal/node/      node → CVM instance id + cache
-internal/config/    แปลง Service + annotation → spec
+internal/clb/        wrapper รอบ tencentcloud-sdk-go + async task polling + diff logic
+    diff.go          pure function ล้วน — จะสร้าง/แก้/ลบอะไรบ้าง (test เยอะสุดอยู่ที่นี่)
+    fake.go          CLB จำลอง in-memory สำหรับ test
+internal/node/       node → CVM instance id + cache
+internal/config/     Service + annotation → spec
 internal/controller/ reconciler
 ```
 
 ## Checklist ก่อนขึ้น production
 
+- [ ] อัปเดต policy ตัวจริง **บน CAM console** ให้ตรงกับ `deploy/cam/controller-policy.json`
+      รอบล่าสุด — แก้ไฟล์ในรีโปอย่างเดียวไม่มีผลใดๆ
 - [ ] สร้าง Service แล้ว CLB โผล่จริง และ `status.loadBalancer.ingress` มีค่า
-      (`ip` หรือ `hostname` แล้วแต่ภูมิภาค — ap-bangkok ให้เป็น hostname)
-- [ ] `curl` ผ่าน VIP/hostname เข้า Traefik ได้
+      (`ip` หรือ `hostname` แล้วแต่ภูมิภาค)
+- [ ] `curl` ผ่าน CLB เข้า Traefik ได้
 - [ ] rolling restart Traefik แล้วไม่มี downtime
 - [ ] `kubectl drain` node แล้ว target ถูกถอนออกภายในไม่กี่วินาที
 - [ ] ลบ listener ทิ้งบน console แล้ว controller สร้างคืนภายใน resync period
 - [ ] ลบ Service แล้ว CLB หายจริง ไม่เหลือค้าง
 - [ ] kill pod controller ระหว่างสร้าง CLB แล้ว restart — ต้องไม่ได้ CLB สองตัว
-- [ ] อัปเดต policy ตัวจริง **บน CAM console** ให้ตรงกับ `deploy/cam/controller-policy.json`
-      รอบล่าสุด โดยเฉพาะ `clb:ModifyLoadBalancerAttributes` และ
-      `clb:SetLoadBalancerSecurityGroups` — แก้ไฟล์ในรีโปอย่างเดียวไม่มีผลใดๆ
-- [ ] ใส่ `pass-to-target` แล้ว traffic ทะลุจริงโดยไม่ต้องแตะ SG ของ node
 - [ ] ผูก `security-groups` แล้ว traffic จากนอก SG ถูกบล็อกจริง
 - [ ] ลอง deny policy ด้วย user จริงหนึ่งคน — แก้ listener บน console ต้องขึ้น error สิทธิ์
 
