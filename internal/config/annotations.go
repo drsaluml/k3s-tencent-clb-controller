@@ -71,8 +71,14 @@ type LBSpec struct {
 	// ExistingID != "" แปลว่า user เอา CLB มาให้ใช้ ห้ามลบตอน Service หาย
 	ExistingID string
 
-	// DeleteProtect เปิด delete protection บน CLB
-	DeleteProtect bool
+	// DeleteProtect เปิด delete protection บน CLB — default คือ "เปิด"
+	//   nil   = CLB ที่ adopt มาและไม่ได้สั่งอะไร → ไม่แตะ ของคนอื่น
+	//   *true = ค่าเริ่มต้นของ CLB ที่เราสร้างเอง
+	//   *false = สั่งปิดชัดเจนด้วย annotation
+	// ปิด default ไว้ที่ "เปิด" เพราะการเผลอลบ CLB จาก console ทำ ingress
+	// ตายทั้งคลัสเตอร์ ส่วนการลบผ่าน Service ยังทำได้ปกติ — cleanup ปิด
+	// protection ให้เองก่อนลบอยู่แล้ว
+	DeleteProtect *bool
 
 	// SecurityGroups เป็น tri-state โดยตั้งใจ
 	//   nil            = ไม่มี annotation → ไม่แตะ SG ที่ผูกอยู่
@@ -114,7 +120,16 @@ func Parse(svc *corev1.Service, cfg *Config) (LBSpec, error) {
 	}
 
 	spec.ExistingID = a[AnnoExistingLoadBalancerID]
-	spec.DeleteProtect = isTrue(a[AnnoDeleteProtection])
+
+	// สั่งมาชัดเจนก็ทำตาม ไม่สั่งก็เปิดให้ ยกเว้น CLB ที่ adopt มา
+	// ซึ่งเป็นของ user การไปเปิด protection ให้เองแล้วทิ้งไว้เป็นการ
+	// เปลี่ยนสถานะ resource ที่เราไม่ได้เป็นเจ้าของ
+	switch v, ok := a[AnnoDeleteProtection]; {
+	case ok:
+		spec.DeleteProtect = boolPtr(isTrue(v))
+	case spec.ExistingID == "":
+		spec.DeleteProtect = boolPtr(true)
+	}
 
 	if sgs, ok := a[AnnoSecurityGroups]; ok {
 		parsed, err := parseSecurityGroups(sgs)

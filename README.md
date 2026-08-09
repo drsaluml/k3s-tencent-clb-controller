@@ -83,7 +83,7 @@ spec:
 | `externalTrafficPolicy: Local` + healthCheckNodePort | health check เปลี่ยนเป็น HTTP อัตโนมัติ |
 | override health check ผ่าน annotation | protocol / path / domain / interval / timeout |
 | Finalizer + กู้สถานะจาก tag เมื่อ crash | `ClientToken` กัน CLB ผีเมื่อ crash หลังสร้างแต่ก่อนเขียน annotation |
-| Delete protection ผ่าน annotation | ปิดให้อัตโนมัติก่อนลบ ไม่งั้น Service ค้าง `Terminating` |
+| Delete protection (**เปิดเป็นค่าเริ่มต้น**) | ปิดให้อัตโนมัติก่อนลบ ไม่งั้น Service ค้าง `Terminating` |
 | Security group ของ CLB + `pass-to-target` | จัดการเฉพาะเมื่อใส่ annotation — ไม่ใส่ = ไม่เข้าไปยุ่ง |
 | รองรับ CLB แบบ DNS (ไม่มี VIP) | เขียน `status` เป็น `hostname` เช่นเดียวกับ AWS ELB |
 | resolve node → CVM instance + cache | override ได้ด้วย annotation `clb.tencentcloud.com/instance-id` บน node |
@@ -202,12 +202,21 @@ CLB ที่ controller ดูแลถูกกำหนดโดย Kubernete
 
 **สองชั้นนี้ครอบคนละเรื่อง — ใช้คู่กัน**
 
-| กลไก | กันอะไร |
-|---|---|
-| `clb.tencentcloud.com/delete-protection: "true"` | กัน **ลบ** CLB (เป็น `DeleteProtect` ของ Tencent เอง) |
-| `deploy/cam/deny-console-edit.json` | กัน **แก้ไข** listener / target / attribute |
+| กลไก | กันอะไร | ต้องตั้งค่าไหม |
+|---|---|---|
+| `clb.tencentcloud.com/delete-protection` | กัน **ลบ** CLB (เป็น `DeleteProtect` ของ Tencent เอง) | ไม่ — **เปิดเป็นค่าเริ่มต้น** |
+| `deploy/cam/deny-console-edit.json` | กัน **แก้ไข** listener / target / attribute | ต้องผูก policy เอง |
+| resync ทุก `--resync-period` (default 10 นาที) | **ดึงกลับ** สิ่งที่ถูกแก้จาก console | ไม่ |
 
 delete-protection ครอบแค่การลบ ไม่ได้ครอบการแก้ listener — ถ้าอยากกันทั้งสองอย่างต้องใช้ทั้งคู่
+
+> **CLB API ไม่มี "modification protection" ให้เปิด** — `AttributeFlags` รับแค่
+> `DeleteProtect`, `UserInVisible`, `BlockStatus`, `NoLBNat`, `BanStatus`,
+> `ShiftupFlag`, `Stop` ส่วน `DescribeLBOperateProtect` (操作保护) **อ่านได้อย่างเดียว
+> ไม่มี API ให้เขียน** สิ่งที่ `service.cloud.tencent.com/modification-protection`
+> ของ TKE ทำ คือ CCM ตรวจเจอการแก้แล้วดึงกลับเอง ไม่ใช่ธงบนคลาวด์ —
+> รีโปนี้ให้ผลเดียวกันด้วย resync บวก CAM deny policy ที่กันตั้งแต่แรกเลย
+> ซึ่งแข็งแรงกว่า เพราะการแก้ถูกปฏิเสธทันทีแทนที่จะถูกดึงกลับทีหลัง
 
 > ตอนลบ Service **controller จะปิด delete protection ให้เองแล้วค่อยลบ CLB**
 > พร้อม Event `ClearingDeleteProtection` ถ้าไม่ทำแบบนี้ `DeleteLoadBalancer` จะล้มเหลว
@@ -424,7 +433,7 @@ docker manifest inspect ghcr.io/drsaluml/k3s-tencent-clb-controller:0.1.0 >/dev/
 | `clb.tencentcloud.com/internet-max-bandwidth-out` | Mbps |
 | `clb.tencentcloud.com/scheduler` | `WRR` / `LEAST_CONN` / `IP_HASH` |
 | `clb.tencentcloud.com/session-expire-time` | วินาที |
-| `clb.tencentcloud.com/delete-protection` | `"true"` เปิด 删除保护 ของ CLB — กันลบพลาดจาก console (กันแก้ไขใช้ CAM deny policy) |
+| `clb.tencentcloud.com/delete-protection` | **default `"true"`** — กันลบพลาดจาก console ใส่ `"false"` เพื่อปิด (กันแก้ไขใช้ CAM deny policy) |
 | `clb.tencentcloud.com/security-groups` | `sg-aaa,sg-bbb` ผูก SG กับตัว CLB (สูงสุด 5 ตัว, ลำดับ = ลำดับความสำคัญ) |
 | `clb.tencentcloud.com/pass-to-target` | `"true"` ให้ CLB ส่ง traffic ถึง node ได้โดยไม่ต้องผ่าน SG ของ node |
 | `clb.tencentcloud.com/health-check-protocol` | `TCP` / `HTTP` — override ค่าที่ controller เลือกให้ |

@@ -19,5 +19,32 @@ spec:
         # → CLB ถอน node นั้นออกเองโดย controller ไม่ต้องทำอะไร
         externalTrafficPolicy: Local
       annotations:
+        # ให้ CLB ส่ง traffic ถึง nodePort ได้โดยไม่ต้องผ่าน SG ของ node
+        # อีกทางคือไปเปิด TCP 30000-32767 บน SG ของ node ทุกตัว ซึ่งทำได้แค่บน
+        # console และต้องเปิดช่วง port กว้างทิ้งไว้ถาวร
+        clb.tencentcloud.com/pass-to-target: "true"
+
+        # ---------------------------------------------------------------
+        # SG ของ CLB — จงใจปิดไว้ก่อน ดูเหตุผลด้านล่างแล้วค่อยตัดสินใจ
+        # clb.tencentcloud.com/security-groups: "sg-c6emh36i,sg-0c08my8i"
+        # ---------------------------------------------------------------
+        # sg-c6emh36i / sg-0c08my8i คือ SG ที่ผูกกับ *node* อยู่ ซึ่งคนละบทบาท
+        # กับ SG ของ CLB:
+        #   SG ของ CLB  = ใครยิงเข้า CLB ได้    (Traefik สาธารณะต้องเป็น 80/443 จากทุกที่)
+        #   SG ของ node = ใครยิงเข้า node ได้   (ตอนนี้ปิด 30000-32767 อยู่ = ต้นเหตุ timeout)
+        #
+        # เอากฎที่เขียนไว้สำหรับ node มาใช้กับ CLB แล้ว ถ้ากฎนั้นไม่มี 80/443
+        # จาก 0.0.0.0/0 คนนอกจะเข้าไม่ได้เลย และเมื่อ pass-to-target เปิดอยู่
+        # SG ของ CLB คือด่านเดียวที่เหลือ — ผิดแล้วดับทั้งเส้น
+        #
+        # เช็คก่อนเปิดใช้: ดู inbound rule ของสอง SG นี้บน console ว่ามี
+        # TCP 80,443 จาก 0.0.0.0/0 ไหม ถ้าไม่มีก็อย่าใส่
+        #
+        # ถ้าอยากจำกัด source IP จริงๆ (เช่นเปิดเฉพาะ Cloudflare) ควรสร้าง SG
+        # ตัวใหม่สำหรับ CLB โดยเฉพาะ แล้วใส่ id ตัวนั้นแทน
+
+        # delete-protection ไม่ต้องใส่ — controller เปิดให้เป็นค่าเริ่มต้นแล้ว
+        # ใส่ "false" เฉพาะตอนที่ไม่ต้องการ
+
         clb.tencentcloud.com/internet-charge-type: TRAFFIC_POSTPAID_BY_HOUR
         clb.tencentcloud.com/internet-max-bandwidth-out: "100"

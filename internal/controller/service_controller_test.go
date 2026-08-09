@@ -402,6 +402,43 @@ func TestReconcile_EnablesDeleteProtection(t *testing.T) {
 	}
 }
 
+// ไม่ใส่ annotation ต้องได้ protection มาเลย — การเผลอลบ CLB จาก console
+// ทำ ingress ตายทั้งคลัสเตอร์ จึงเลือกให้ค่าเริ่มต้นเป็นฝั่งที่ปลอดภัยกว่า
+func TestReconcile_DeleteProtectionIsOnByDefault(t *testing.T) {
+	svc := traefikService()
+	r, fake, c := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
+
+	reconcileOnce(t, r, svc)
+
+	lbID := getService(t, c, svc).Annotations[config.AnnoLoadBalancerID]
+	if !fake.LBs[lbID].DeleteProtect {
+		t.Fatal("delete protection should default to on for a CLB we created")
+	}
+}
+
+// แต่ default ต้องไม่ลามไปยัง CLB ที่ adopt มา — นั่นเป็นของ user
+// การเปิด protection ทิ้งไว้บน resource ที่เราไม่ได้สร้างคือการเปลี่ยนของคนอื่น
+func TestReconcile_DeleteProtectionDefaultSkipsAdoptedLB(t *testing.T) {
+	svc := traefikService()
+	r, fake, _ := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
+
+	lbID, err := fake.Create(context.Background(), clb.CreateSpec{Name: "byhand", Type: clb.LBTypeOpen})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Annotations = map[string]string{config.AnnoExistingLoadBalancerID: lbID}
+	if err := r.Update(context.Background(), svc); err != nil {
+		t.Fatal(err)
+	}
+	fake.FailNext["SetDeleteProtection"] = errors.New("must not touch protection on an adopted CLB")
+
+	reconcileOnce(t, r, svc)
+
+	if fake.LBs[lbID].DeleteProtect {
+		t.Fatal("delete protection was turned on for an adopted CLB without being asked")
+	}
+}
+
 func TestReconcile_BindsSecurityGroupsAndPassToTarget(t *testing.T) {
 	svc := traefikService()
 	svc.Annotations = map[string]string{
@@ -521,17 +558,20 @@ func TestReconcile_ClearsDeleteProtectionBeforeDeleting(t *testing.T) {
 	}
 }
 
-// ปิด annotation แล้ว protection ต้องถูกปิดตามด้วย ไม่ใช่ค้างเปิดไว้
-func TestReconcile_DisablesDeleteProtectionWhenAnnotationRemoved(t *testing.T) {
+// ต้องปิด protection ได้จริงเมื่อสั่ง "false" ชัดเจน
+// (ลบ annotation ทิ้งเฉยๆ ไม่ปิดให้แล้ว เพราะ default คือเปิด)
+func TestReconcile_DisablesDeleteProtectionWhenSetToFalse(t *testing.T) {
 	svc := traefikService()
-	svc.Annotations = map[string]string{config.AnnoDeleteProtection: "true"}
 	r, fake, c := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
 
 	reconcileOnce(t, r, svc)
 	lbID := getService(t, c, svc).Annotations[config.AnnoLoadBalancerID]
+	if !fake.LBs[lbID].DeleteProtect {
+		t.Fatal("precondition: protection should be on by default")
+	}
 
 	cur := getService(t, c, svc)
-	delete(cur.Annotations, config.AnnoDeleteProtection)
+	cur.Annotations[config.AnnoDeleteProtection] = "false"
 	if err := c.Update(context.Background(), cur); err != nil {
 		t.Fatal(err)
 	}

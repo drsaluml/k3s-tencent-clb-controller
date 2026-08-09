@@ -95,13 +95,13 @@ func (r *ServiceReconciler) reconcileNormal(ctx context.Context, svc *corev1.Ser
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
-	if lb.DeleteProtect != spec.DeleteProtect {
-		logger.Info("updating delete protection", "id", lb.ID, "enabled", spec.DeleteProtect)
-		if err := r.CLB.SetDeleteProtection(ctx, lb.ID, spec.DeleteProtect); err != nil {
+	if spec.DeleteProtect != nil && lb.DeleteProtect != *spec.DeleteProtect {
+		logger.Info("updating delete protection", "id", lb.ID, "enabled", *spec.DeleteProtect)
+		if err := r.CLB.SetDeleteProtection(ctx, lb.ID, *spec.DeleteProtect); err != nil {
 			r.event(svc, corev1.EventTypeWarning, "SyncLoadBalancerFailed", err.Error())
 			return r.retry(err)
 		}
-		lb.DeleteProtect = spec.DeleteProtect
+		lb.DeleteProtect = *spec.DeleteProtect
 	}
 
 	// ลำดับสำคัญ: ผูก SG ให้เสร็จก่อนแล้วค่อยเปิด pass-to-target
