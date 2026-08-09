@@ -87,8 +87,17 @@ spec:
 | derive `--cluster-id` จาก UID ของ namespace `kube-system` อัตโนมัติ | **ยังไม่ทำ** |
 | CVM instance role (ไม่ต้องเก็บ static key) | **ยังไม่ทำ** |
 
-ยังไม่เคยรันกับ Tencent Cloud API จริง — test ทั้งหมดใช้ in-memory fake
-ก่อนขึ้น production ควรลองกับคลัสเตอร์ทดสอบตาม checklist ท้ายไฟล์
+**สถานะการยืนยันกับ Tencent Cloud API จริง** (k3s v1.36.2, ap-bangkok)
+
+| ขั้น | ผล |
+|---|---|
+| อ่าน config จาก ConfigMap/Secret, leader election | ผ่าน |
+| `DescribeLoadBalancers` ค้นด้วย tag | ผ่าน |
+| `CreateLoadBalancer` + รอ async task | ผ่าน |
+| `CreateListener` (HTTP health check) | เคยพังที่ `HttpCheckDomain` — แก้แล้วใน v0.3.0 **ยังไม่ยืนยันซ้ำ** |
+| `RegisterTargets` / status / การลบ | **ยังไม่ยืนยัน** |
+
+test อัตโนมัติทั้งหมดใช้ in-memory fake — ทำ checklist ท้ายไฟล์ก่อนขึ้น production
 
 ## ติดตั้ง
 
