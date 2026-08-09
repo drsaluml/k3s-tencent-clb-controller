@@ -73,22 +73,40 @@ spec:
 
 ## สถานะการพัฒนา
 
-| ส่วน | สถานะ |
+**ทำแล้ว**
+
+| ส่วน | หมายเหตุ |
 |---|---|
-| สร้าง / adopt / ลบ CLB ตาม Service | ทำแล้ว |
-| Listener sync (TCP/UDP) ตาม ServicePort | ทำแล้ว |
-| Target sync ตาม node + EndpointSlice | ทำแล้ว |
-| `externalTrafficPolicy: Local` + healthCheckNodePort | ทำแล้ว |
-| Finalizer + กู้สถานะจาก tag เมื่อ crash | ทำแล้ว |
-| Leader election, healthz/readyz, metrics endpoint | ทำแล้ว |
-| Security group ของ CLB + `pass-to-target` | ทำแล้ว (**ยังไม่ยืนยันกับ API จริง**) |
-| Orphan GC (ลบ CLB ที่ไม่มี Service คู่แล้ว) | **ยังไม่ทำ** |
-| Prometheus metric ของ CLB API เอง | **ยังไม่ทำ** |
-| Helm chart | **ยังไม่ทำ** |
-| derive `--cluster-id` จาก UID ของ namespace `kube-system` อัตโนมัติ | **ยังไม่ทำ** |
-| CVM instance role (ไม่ต้องเก็บ static key) | **ยังไม่ทำ** |
+| สร้าง / adopt / ลบ CLB ตาม Service | adopt แล้วไม่ลบตอน Service หาย และไม่แตะ listener ที่ไม่ใช่ของเรา |
+| Listener sync (TCP/UDP) ตาม ServicePort | จงใจไม่รองรับ L7 — ดู "สิ่งที่จงใจไม่ทำ" |
+| Target sync ตาม node + EndpointSlice | คัด node ออกได้ด้วย `--excluded-node-labels` |
+| `externalTrafficPolicy: Local` + healthCheckNodePort | health check เปลี่ยนเป็น HTTP อัตโนมัติ |
+| override health check ผ่าน annotation | protocol / path / domain / interval / timeout |
+| Finalizer + กู้สถานะจาก tag เมื่อ crash | `ClientToken` กัน CLB ผีเมื่อ crash หลังสร้างแต่ก่อนเขียน annotation |
+| Delete protection ผ่าน annotation | ปิดให้อัตโนมัติก่อนลบ ไม่งั้น Service ค้าง `Terminating` |
+| Security group ของ CLB + `pass-to-target` | จัดการเฉพาะเมื่อใส่ annotation — ไม่ใส่ = ไม่เข้าไปยุ่ง |
+| รองรับ CLB แบบ DNS (ไม่มี VIP) | เขียน `status` เป็น `hostname` เช่นเดียวกับ AWS ELB |
+| resolve node → CVM instance + cache | override ได้ด้วย annotation `clb.tencentcloud.com/instance-id` บน node |
+| Client-side rate limit + รอ async task ทุกครั้ง | CLB API เป็น async ทั้งหมด และ limit ต่ำกว่าที่คนส่วนใหญ่คาด |
+| Leader election, healthz/readyz, metrics endpoint | |
+| CAM policy สำเร็จรูป (allow ของ controller + deny console) | `deploy/cam/` |
+| CI + release image ขึ้น GHCR | `.github/workflows/` |
+
+**ยังไม่ทำ**
+
+| ส่วน | หมายเหตุ |
+|---|---|
+| Orphan GC (ลบ CLB ที่ไม่มี Service คู่แล้ว) | ตอนนี้ CLB ที่หลุดต้องตามลบเอง |
+| Prometheus metric ของ CLB API เอง | metrics endpoint มีแล้วแต่ยังไม่มี metric ของฝั่ง cloud |
+| Helm chart | ใช้ `deploy/manifests.yaml` ไปก่อน |
+| derive `--cluster-id` จาก UID ของ namespace `kube-system` อัตโนมัติ | ตอนนี้ต้องตั้งเองใน ConfigMap |
+| CVM instance role (ไม่ต้องเก็บ static key) | ตอนนี้ยังใช้ static key ใน Secret |
+| e2e test ที่ยิง Tencent API จริง | test ทั้งหมดใช้ in-memory fake |
 
 **สถานะการยืนยันกับ Tencent Cloud API จริง** (k3s v1.36.2, ap-bangkok)
+
+ตารางนี้คือสิ่งที่ **ยิงกับคลาวด์จริงแล้ว** ไม่ใช่แค่ผ่าน test — แยกจากตารางบน
+เพราะ "โค้ดเขียนแล้ว" กับ "รู้ว่าใช้ได้จริง" ไม่ใช่เรื่องเดียวกัน
 
 | ขั้น | ผล |
 |---|---|
@@ -98,7 +116,11 @@ spec:
 | `CreateListener` (HTTP health check) | ผ่าน (v0.2.1 หลังแก้ `HttpCheckDomain`) |
 | `RegisterTargets` | ผ่าน |
 | `status.loadBalancer` | เคยค้างว่างเพราะ CLB เป็นแบบ DNS — แก้แล้ว **ยังไม่ยืนยันซ้ำ** |
+| traffic ทะลุ CLB ถึง Traefik จริง | **ยังไม่ผ่าน** — SG ของ node ยังปิด nodePort อยู่ ดู Troubleshooting |
 | การลบ CLB ตอนลบ Service | **ยังไม่ยืนยัน** |
+| `ModifyLoadBalancerAttributes` (delete protection, pass-to-target) | **ยังไม่ยืนยัน** — สิทธิ์ CAM เพิ่งถูกเพิ่มใน 3474129 ของเดิมขาดไป |
+| `SetLoadBalancerSecurityGroups` | **ยังไม่ยืนยัน** |
+| CAM deny policy กันแก้จาก console ได้จริง | **ยังไม่ยืนยัน** — ต้องลองด้วย user จริงหนึ่งคน |
 
 > **CLB บางภูมิภาคเป็นแบบ DNS ไม่ใช่ IP** — `ap-bangkok` คืน `LoadBalancerVips: []`
 > แต่ให้ `Domain` มาแทน controller จึงเขียนลง `status.loadBalancer.ingress[0].hostname`
@@ -538,13 +560,20 @@ internal/controller/ reconciler
 
 ## Checklist ก่อนขึ้น production
 
-- [ ] สร้าง Service แล้ว CLB โผล่จริง และ `status.loadBalancer.ingress` มี VIP
-- [ ] `curl` ผ่าน VIP เข้า Traefik ได้
+- [ ] สร้าง Service แล้ว CLB โผล่จริง และ `status.loadBalancer.ingress` มีค่า
+      (`ip` หรือ `hostname` แล้วแต่ภูมิภาค — ap-bangkok ให้เป็น hostname)
+- [ ] `curl` ผ่าน VIP/hostname เข้า Traefik ได้
 - [ ] rolling restart Traefik แล้วไม่มี downtime
 - [ ] `kubectl drain` node แล้ว target ถูกถอนออกภายในไม่กี่วินาที
 - [ ] ลบ listener ทิ้งบน console แล้ว controller สร้างคืนภายใน resync period
 - [ ] ลบ Service แล้ว CLB หายจริง ไม่เหลือค้าง
 - [ ] kill pod controller ระหว่างสร้าง CLB แล้ว restart — ต้องไม่ได้ CLB สองตัว
+- [ ] อัปเดต CAM policy ของ sub-user ให้ตรงกับ `deploy/cam/controller-policy.json`
+      รอบล่าสุด — ขาด `clb:ModifyLoadBalancerAttributes` แล้ว delete-protection
+      กับ pass-to-target จะพังด้วย auth error
+- [ ] ใส่ `pass-to-target` แล้ว traffic ทะลุจริงโดยไม่ต้องแตะ SG ของ node
+- [ ] ผูก `security-groups` แล้ว traffic จากนอก SG ถูกบล็อกจริง
+- [ ] ลอง deny policy ด้วย user จริงหนึ่งคน — แก้ listener บน console ต้องขึ้น error สิทธิ์
 
 ## License
 
