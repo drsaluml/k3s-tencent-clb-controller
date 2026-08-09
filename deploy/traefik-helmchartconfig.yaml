@@ -1,0 +1,23 @@
+# Traefik ใน K3s ถูก deploy ผ่าน HelmChart addon
+# แก้ค่าโดยตรงไม่ได้ (จะถูก reconcile ทับ) ต้องแก้ผ่าน HelmChartConfig
+#
+# spec.loadBalancerClass คือกุญแจสำคัญสองอย่างพร้อมกัน:
+#   1. บอก ServiceLB (klipper) ของ K3s ให้ปล่อย Service นี้ไป
+#   2. บอก controller ตัวนี้ว่า Service นี้เป็นความรับผิดชอบของมัน
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    service:
+      spec:
+        loadBalancerClass: clb.tencentcloud.com/external
+        # Local ทำให้ได้ client source IP จริง และ kube-proxy จะเปิด
+        # healthCheckNodePort ที่ตอบ 503 บน node ที่ไม่มี traefik pod
+        # → CLB ถอน node นั้นออกเองโดย controller ไม่ต้องทำอะไร
+        externalTrafficPolicy: Local
+      annotations:
+        clb.tencentcloud.com/internet-charge-type: TRAFFIC_POSTPAID_BY_HOUR
+        clb.tencentcloud.com/internet-max-bandwidth-out: "100"
