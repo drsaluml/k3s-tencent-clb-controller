@@ -388,6 +388,71 @@ func TestReconcile_DoesNotClaimSuccessWithoutAnAddress(t *testing.T) {
 	}
 }
 
+func TestReconcile_EnablesDeleteProtection(t *testing.T) {
+	for _, anno := range []string{config.AnnoDeleteProtection, config.AnnoCCMModificationProtection} {
+		t.Run(anno, func(t *testing.T) {
+			svc := traefikService()
+			svc.Annotations = map[string]string{anno: "true"}
+			r, fake, c := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
+
+			reconcileOnce(t, r, svc)
+
+			lbID := getService(t, c, svc).Annotations[config.AnnoLoadBalancerID]
+			if !fake.LBs[lbID].DeleteProtect {
+				t.Fatal("delete protection was not enabled on the CLB")
+			}
+		})
+	}
+}
+
+// protection ต้องถูกปิดให้อัตโนมัติตอนลบ ไม่งั้น DeleteLoadBalancer ล้มเหลว
+// finalizer ไม่ถูกปลด แล้ว Service ค้าง Terminating ตลอดกาล
+func TestReconcile_ClearsDeleteProtectionBeforeDeleting(t *testing.T) {
+	svc := traefikService()
+	svc.Annotations = map[string]string{config.AnnoDeleteProtection: "true"}
+	r, fake, c := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
+
+	reconcileOnce(t, r, svc)
+	lbID := getService(t, c, svc).Annotations[config.AnnoLoadBalancerID]
+	if !fake.LBs[lbID].DeleteProtect {
+		t.Fatal("precondition: delete protection should be on")
+	}
+
+	if err := c.Delete(context.Background(), getService(t, c, svc)); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, r, svc)
+
+	if _, still := fake.LBs[lbID]; still {
+		t.Fatal("CLB survived deletion; protection was not cleared first")
+	}
+	var out corev1.Service
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(svc), &out); err == nil {
+		t.Fatalf("service still exists with finalizers %v", out.Finalizers)
+	}
+}
+
+// ปิด annotation แล้ว protection ต้องถูกปิดตามด้วย ไม่ใช่ค้างเปิดไว้
+func TestReconcile_DisablesDeleteProtectionWhenAnnotationRemoved(t *testing.T) {
+	svc := traefikService()
+	svc.Annotations = map[string]string{config.AnnoDeleteProtection: "true"}
+	r, fake, c := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
+
+	reconcileOnce(t, r, svc)
+	lbID := getService(t, c, svc).Annotations[config.AnnoLoadBalancerID]
+
+	cur := getService(t, c, svc)
+	delete(cur.Annotations, config.AnnoDeleteProtection)
+	if err := c.Update(context.Background(), cur); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, r, cur)
+
+	if fake.LBs[lbID].DeleteProtect {
+		t.Fatal("delete protection should have been turned off")
+	}
+}
+
 func strPtr(s string) *string { return &s }
 
 func containsString(list []string, s string) bool {

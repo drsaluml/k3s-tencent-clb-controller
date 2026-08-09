@@ -199,6 +199,25 @@ func (c *client) Create(ctx context.Context, spec CreateSpec) (string, error) {
 	return id, nil
 }
 
+// SetDeleteProtection เปิด/ปิด delete protection ของ CLB
+//
+// เปิดไว้แล้ว Tencent ปฏิเสธ DeleteLoadBalancer ทุกทาง — กันคนลบพลาดจาก console
+// แต่ก็กัน controller ด้วย cleanup จึงต้องปิดก่อนลบเสมอ
+func (c *client) SetDeleteProtection(ctx context.Context, id string, on bool) error {
+	req := sdk.NewModifyLoadBalancerAttributesRequest()
+	req.LoadBalancerId = common.StringPtr(id)
+	req.DeleteProtect = common.BoolPtr(on)
+
+	if err := c.limiter.Wait(ctx); err != nil {
+		return err
+	}
+	resp, err := c.clb.ModifyLoadBalancerAttributesWithContext(ctx, req)
+	if err != nil {
+		return classify(err)
+	}
+	return c.waitTask(ctx, deref(resp.Response.RequestId))
+}
+
 func (c *client) Delete(ctx context.Context, id string) error {
 	req := sdk.NewDeleteLoadBalancerRequest()
 	req.LoadBalancerIds = common.StringPtrs([]string{id})
@@ -397,6 +416,12 @@ func convertLB(lb *sdk.LoadBalancer) LoadBalancer {
 	}
 	for _, t := range lb.Tags {
 		out.Tags[deref(t.TagKey)] = deref(t.TagValue)
+	}
+	// AttributeFlags เป็น array ของชื่อ flag ที่เปิดอยู่ ไม่ใช่ boolean แยก field
+	for _, f := range lb.AttributeFlags {
+		if deref(f) == attrDeleteProtect {
+			out.DeleteProtect = true
+		}
 	}
 	return out
 }

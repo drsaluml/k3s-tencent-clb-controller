@@ -117,11 +117,29 @@ func (f *Fake) Create(_ context.Context, spec CreateSpec) (string, error) {
 	return id, nil
 }
 
+func (f *Fake) SetDeleteProtection(_ context.Context, id string, on bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail("SetDeleteProtection"); err != nil {
+		return err
+	}
+	lb, ok := f.LBs[id]
+	if !ok {
+		return fmt.Errorf("load balancer %s not found", id)
+	}
+	lb.DeleteProtect = on
+	return nil
+}
+
 func (f *Fake) Delete(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.fail("Delete"); err != nil {
 		return err
+	}
+	// จำลองพฤติกรรมจริง: Tencent ปฏิเสธการลบเมื่อ delete protection เปิดอยู่
+	if lb, ok := f.LBs[id]; ok && lb.DeleteProtect {
+		return fmt.Errorf("load balancer %s has delete protection enabled", id)
 	}
 	delete(f.LBs, id)
 	delete(f.Listeners, id)

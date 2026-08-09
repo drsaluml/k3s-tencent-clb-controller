@@ -177,6 +177,20 @@ CLB ที่ controller ดูแลถูกกำหนดโดย Kubernete
 ใน CAM **deny ชนะ allow เสมอ** แม้ user จะมี `AdministratorAccess` ก็ยังแก้ไม่ได้
 และเงื่อนไขผูกกับ tag ทำให้ CLB ตัวอื่นในบัญชีเดียวกันยังแก้ได้ตามปกติ
 
+**สองชั้นนี้ครอบคนละเรื่อง — ใช้คู่กัน**
+
+| กลไก | กันอะไร |
+|---|---|
+| `clb.tencentcloud.com/delete-protection: "true"` | กัน **ลบ** CLB (เป็น `DeleteProtect` ของ Tencent เอง) |
+| `deploy/cam/deny-console-edit.json` | กัน **แก้ไข** listener / target / attribute |
+
+delete-protection ครอบแค่การลบ ไม่ได้ครอบการแก้ listener — ถ้าอยากกันทั้งสองอย่างต้องใช้ทั้งคู่
+
+> ตอนลบ Service **controller จะปิด delete protection ให้เองแล้วค่อยลบ CLB**
+> พร้อม Event `ClearingDeleteProtection` ถ้าไม่ทำแบบนี้ `DeleteLoadBalancer` จะล้มเหลว
+> finalizer ไม่ถูกปลด แล้ว Service ค้าง `Terminating` ตลอดกาล
+> เจตนาของ protection คือกันคนพลาดจาก console ส่วน Service คือ source of truth
+
 > การรองรับ tag condition ต่างกันไปในแต่ละ product — ทดสอบด้วย user จริงหนึ่งคน
 > ก่อนเชื่อว่าใช้ได้ วิธีทดสอบ: ล็อกอินด้วย user นั้นแล้วลองแก้ listener ต้องขึ้น error สิทธิ์
 
@@ -378,6 +392,8 @@ docker build --build-arg VERSION=dev -t clb-controller:dev .
 | `clb.tencentcloud.com/internet-max-bandwidth-out` | Mbps |
 | `clb.tencentcloud.com/scheduler` | `WRR` / `LEAST_CONN` / `IP_HASH` |
 | `clb.tencentcloud.com/session-expire-time` | วินาที |
+| `clb.tencentcloud.com/delete-protection` | `"true"` เปิด 删除保护 ของ CLB — กันลบพลาดจาก console |
+| `service.cloud.tencent.com/modification-protection` | alias ของอันบน รับไว้ให้ย้ายมาจาก CCM ตัวเต็มได้ |
 | `clb.tencentcloud.com/health-check-protocol` | `TCP` / `HTTP` — override ค่าที่ controller เลือกให้ |
 | `clb.tencentcloud.com/health-check-path` | ใช้เมื่อ health check เป็น HTTP |
 | `clb.tencentcloud.com/health-check-domain` | Host header ของ HTTP health check (default `<svc>.<ns>`) — CLB บังคับให้มีค่า |

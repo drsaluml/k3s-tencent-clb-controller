@@ -30,6 +30,14 @@ const (
 	AnnoScheduler         = Prefix + "scheduler"
 	AnnoSessionExpireTime = Prefix + "session-expire-time"
 
+	// AnnoDeleteProtection เปิด "删除保护" ของ CLB — กันคนลบพลาดจาก console
+	AnnoDeleteProtection = Prefix + "delete-protection"
+	// AnnoCCMModificationProtection คือ annotation ของ cloud-controller-manager ตัวเต็ม
+	// รับไว้ให้ย้ายมาจาก CCM ได้โดยไม่ต้องแก้ manifest
+	// เราแมปเป็น DeleteProtect ของ CLB ซึ่งครอบเฉพาะการลบ ไม่ได้ครอบการแก้ไข —
+	// การกันแก้ไขต้องใช้ CAM deny policy (deploy/cam/deny-console-edit.json)
+	AnnoCCMModificationProtection = "service.cloud.tencent.com/modification-protection"
+
 	AnnoHealthCheckProtocol = Prefix + "health-check-protocol"
 	AnnoHealthCheckPath     = Prefix + "health-check-path"
 	AnnoHealthCheckDomain   = Prefix + "health-check-domain"
@@ -56,6 +64,9 @@ type LBSpec struct {
 
 	// ExistingID != "" แปลว่า user เอา CLB มาให้ใช้ ห้ามลบตอน Service หาย
 	ExistingID string
+
+	// DeleteProtect เปิด delete protection บน CLB
+	DeleteProtect bool
 }
 
 // Adopted บอกว่า CLB ตัวนี้เป็นของ user ไม่ใช่ของเราสร้าง
@@ -85,6 +96,7 @@ func Parse(svc *corev1.Service, cfg *Config) (LBSpec, error) {
 	}
 
 	spec.ExistingID = a[AnnoExistingLoadBalancerID]
+	spec.DeleteProtect = isTrue(a[AnnoDeleteProtection]) || isTrue(a[AnnoCCMModificationProtection])
 	spec.Create = clb.CreateSpec{
 		Name:             lbName(svc, cfg.ClusterID),
 		Type:             lbType,
@@ -206,6 +218,16 @@ func listenerName(svc *corev1.Service, p corev1.ServicePort) string {
 		return fmt.Sprintf("%s-%s-%s", svc.Namespace, svc.Name, p.Name)
 	}
 	return fmt.Sprintf("%s-%s-%d", svc.Namespace, svc.Name, p.Port)
+}
+
+// isTrue รับได้ทั้ง "true" และ "1" — ต้องเป็น string ใน YAML อยู่แล้ว
+// จึงมักถูกเขียนมาได้หลายแบบ
+func isTrue(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "1", "yes", "on":
+		return true
+	}
+	return false
 }
 
 func get(a map[string]string, key, def string) string {

@@ -33,6 +33,10 @@ const (
 	ChargeBandwidthPostpaidByHour = "BANDWIDTH_POSTPAID_BY_HOUR"
 )
 
+// attrDeleteProtect คือชื่อ flag ใน LoadBalancer.AttributeFlags ที่บอกว่า
+// delete protection เปิดอยู่ — Tencent ไม่ได้ให้เป็น boolean แยก field
+const attrDeleteProtect = "DeleteProtect"
+
 // DefaultWeight คือน้ำหนักมาตรฐานของ target
 // controller นี้ไม่ทำ weighted routing — ให้ทุก node เท่ากันหมด
 const DefaultWeight int64 = 10

@@ -95,6 +95,15 @@ func (r *ServiceReconciler) reconcileNormal(ctx context.Context, svc *corev1.Ser
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
+	if lb.DeleteProtect != spec.DeleteProtect {
+		logger.Info("updating delete protection", "id", lb.ID, "enabled", spec.DeleteProtect)
+		if err := r.CLB.SetDeleteProtection(ctx, lb.ID, spec.DeleteProtect); err != nil {
+			r.event(svc, corev1.EventTypeWarning, "SyncLoadBalancerFailed", err.Error())
+			return r.retry(err)
+		}
+		lb.DeleteProtect = spec.DeleteProtect
+	}
+
 	listeners, err := r.reconcileListeners(ctx, svc, lb.ID, spec)
 	if err != nil {
 		r.event(svc, corev1.EventTypeWarning, "SyncLoadBalancerFailed", err.Error())
@@ -394,6 +403,21 @@ func (r *ServiceReconciler) cleanup(ctx context.Context, svc *corev1.Service) er
 	}
 	if lb == nil {
 		return nil // ถูกลบไปแล้ว
+	}
+
+	// delete protection กันไม่ให้ลบได้ รวมถึงจาก controller เอง
+	//
+	// ปิดให้อัตโนมัติแทนที่จะหยุด เพราะถ้าหยุด finalizer จะค้างและ Service
+	// จะติด Terminating ตลอดกาล เจตนาของ protection คือกันคนพลาดจาก console
+	// ส่วน Service ใน Kubernetes เป็น source of truth — ลบ Service = สั่งให้ CLB หายไป
+	// บอกด้วย Event ให้เห็นชัดว่าเกิดอะไรขึ้น ไม่ทำเงียบๆ
+	if lb.DeleteProtect {
+		logger.Info("clearing delete protection before deletion", "id", id)
+		r.event(svc, corev1.EventTypeWarning, "ClearingDeleteProtection",
+			"Disabling delete protection on CLB "+id+" because its Service was deleted")
+		if err := r.CLB.SetDeleteProtection(ctx, id, false); err != nil {
+			return fmt.Errorf("clearing delete protection on %s: %w", id, err)
+		}
 	}
 
 	logger.Info("deleting load balancer", "id", id)

@@ -14,6 +14,9 @@ type LoadBalancer struct {
 	Domain string
 	Status uint64 // 0 = กำลังสร้าง, 1 = พร้อมใช้งาน
 	Tags   map[string]string
+	// DeleteProtect มาจาก AttributeFlags ที่มี "DeleteProtect"
+	// เปิดแล้ว Tencent จะปฏิเสธ DeleteLoadBalancer ทุกทาง รวมถึงจาก controller เอง
+	DeleteProtect bool
 }
 
 // Ready บอกว่า CLB พร้อมรับ listener แล้วหรือยัง
@@ -130,6 +133,8 @@ type Interface interface {
 	Get(ctx context.Context, id string) (*LoadBalancer, error)
 	Create(ctx context.Context, spec CreateSpec) (string, error)
 	Delete(ctx context.Context, id string) error
+	// SetDeleteProtection เปิด/ปิด "删除保护" ของ CLB
+	SetDeleteProtection(ctx context.Context, id string, on bool) error
 
 	ListListeners(ctx context.Context, lbID string) ([]Listener, error)
 	CreateListener(ctx context.Context, lbID string, spec ListenerSpec) (string, error)
