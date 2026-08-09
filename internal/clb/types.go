@@ -81,10 +81,15 @@ func (l Listener) Key() ListenerKey { return ListenerKey{l.Protocol, l.Port} }
 // CheckType TCP = เช็ค nodePort ตรงๆ (externalTrafficPolicy: Cluster)
 // CheckType HTTP = เช็ค healthCheckNodePort ที่ kube-proxy เปิด (policy: Local)
 type HealthCheck struct {
-	Enabled     bool
-	Type        string // TCP | HTTP
-	Port        int64
-	HTTPPath    string
+	Enabled  bool
+	Type     string // TCP | HTTP
+	Port     int64
+	HTTPPath string
+	// HTTPDomain ไปเป็น Host header ของ health check
+	// CLB บังคับให้มีค่าเมื่อ CheckType เป็น HTTP บน listener แบบ TCP
+	// (ตอบกลับ "HealthCheck.HttpCheckDomain can't be None" ถ้าไม่ส่ง)
+	// kube-proxy ตอบ healthCheckNodePort โดยไม่สนใจ Host ค่านี้จึงเป็นแค่ป้ายชื่อ
+	HTTPDomain  string
 	HTTPMethod  string
 	Interval    int64
 	Timeout     int64

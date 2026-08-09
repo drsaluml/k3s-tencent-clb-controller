@@ -259,6 +259,12 @@ func TestReconcile_LocalPolicyOnlyRegistersNodesWithEndpoints(t *testing.T) {
 			t.Fatalf("listener %d: expected HTTP health check on 32500, got %s/%d",
 				l.Port, l.HealthCheck.Type, l.HealthCheck.Port)
 		}
+		// CLB ปฏิเสธ HTTP health check ที่ไม่มี domain ด้วย
+		// "HealthCheck.HttpCheckDomain can't be None" — listener จึงสร้างไม่ได้เลย
+		if l.HealthCheck.HTTPDomain == "" || l.HealthCheck.HTTPPath == "" {
+			t.Fatalf("listener %d: HTTP health check needs both domain and path, got domain=%q path=%q",
+				l.Port, l.HealthCheck.HTTPDomain, l.HealthCheck.HTTPPath)
+		}
 	}
 }
 

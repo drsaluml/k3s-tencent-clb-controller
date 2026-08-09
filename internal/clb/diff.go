@@ -97,6 +97,9 @@ func healthCheckNeedsUpdate(actual, desired HealthCheck) bool {
 		if actual.HTTPPath != desired.HTTPPath {
 			return true
 		}
+		if desired.HTTPDomain != "" && actual.HTTPDomain != desired.HTTPDomain {
+			return true
+		}
 		// HTTPMethod ที่ CLB คืนมาอาจว่างถ้าไม่เคยตั้ง — เทียบเฉพาะเมื่อ desired ระบุไว้
 		if desired.HTTPMethod != "" && actual.HTTPMethod != desired.HTTPMethod {
 			return true

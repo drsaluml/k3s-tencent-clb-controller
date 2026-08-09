@@ -343,6 +343,7 @@ docker build --build-arg VERSION=dev -t clb-controller:dev .
 | `clb.tencentcloud.com/session-expire-time` | วินาที |
 | `clb.tencentcloud.com/health-check-protocol` | `TCP` / `HTTP` — override ค่าที่ controller เลือกให้ |
 | `clb.tencentcloud.com/health-check-path` | ใช้เมื่อ health check เป็น HTTP |
+| `clb.tencentcloud.com/health-check-domain` | Host header ของ HTTP health check (default `<svc>.<ns>`) — CLB บังคับให้มีค่า |
 | `clb.tencentcloud.com/health-check-interval` | วินาที |
 | `clb.tencentcloud.com/health-check-timeout` | วินาที |
 

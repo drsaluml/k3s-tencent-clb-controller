@@ -415,6 +415,7 @@ func convertListener(l *sdk.Listener) Listener {
 			Type:        deref(hc.CheckType),
 			Port:        deref(hc.CheckPort),
 			HTTPPath:    deref(hc.HttpCheckPath),
+			HTTPDomain:  deref(hc.HttpCheckDomain),
 			HTTPMethod:  deref(hc.HttpCheckMethod),
 			Interval:    deref(hc.IntervalTime),
 			Timeout:     deref(hc.TimeOut),
@@ -451,6 +452,8 @@ func toSDKHealthCheck(hc HealthCheck) *sdk.HealthCheck {
 	if hc.Type == HealthCheckHTTP {
 		out.HttpCheckPath = common.StringPtr(hc.HTTPPath)
 		out.HttpCheckMethod = common.StringPtr(hc.HTTPMethod)
+		// ต้องส่งเสมอ ไม่งั้น CLB ปฏิเสธด้วย "HttpCheckDomain can't be None"
+		out.HttpCheckDomain = common.StringPtr(hc.HTTPDomain)
 		// HttpCode เป็น bitmask: 1=1xx 2=2xx 4=3xx 8=4xx 16=5xx
 		// kube-proxy ตอบ 200 เมื่อ node มี local endpoint และ 503 เมื่อไม่มี
 		// เอาแค่ 2xx จึงพอ และทำให้ node ที่ไม่มี pod ถูกถอนออกอัตโนมัติ

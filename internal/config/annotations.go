@@ -32,6 +32,7 @@ const (
 
 	AnnoHealthCheckProtocol = Prefix + "health-check-protocol"
 	AnnoHealthCheckPath     = Prefix + "health-check-path"
+	AnnoHealthCheckDomain   = Prefix + "health-check-domain"
 	AnnoHealthCheckInterval = Prefix + "health-check-interval"
 	AnnoHealthCheckTimeout  = Prefix + "health-check-timeout"
 )
@@ -171,16 +172,18 @@ func parseListeners(svc *corev1.Service, a map[string]string) ([]clb.ListenerSpe
 		if local && proto == clb.ProtocolTCP && hcNodePort > 0 {
 			hc.Type = clb.HealthCheckHTTP
 			hc.Port = hcNodePort
-			hc.HTTPPath = get(a, AnnoHealthCheckPath, "/healthz")
-			hc.HTTPMethod = "GET"
 		}
 		// ให้ annotation override ได้ แต่เฉพาะกรณีที่ user รู้ว่าทำอะไรอยู่
 		if v := a[AnnoHealthCheckProtocol]; v != "" {
 			hc.Type = strings.ToUpper(v)
-			if hc.Type == clb.HealthCheckHTTP && hc.HTTPPath == "" {
-				hc.HTTPPath = get(a, AnnoHealthCheckPath, "/healthz")
-				hc.HTTPMethod = "GET"
-			}
+		}
+		if hc.Type == clb.HealthCheckHTTP {
+			hc.HTTPPath = get(a, AnnoHealthCheckPath, "/healthz")
+			hc.HTTPMethod = "GET"
+			// CLB ปฏิเสธ HTTP health check ที่ไม่มี domain ("can't be None")
+			// kube-proxy ตอบ healthCheckNodePort โดยไม่สนใจ Host header
+			// ค่านี้จึงเป็นแค่ป้ายชื่อ — ตั้งเป็นชื่อ Service ให้อ่านออกบน console
+			hc.HTTPDomain = get(a, AnnoHealthCheckDomain, svc.Name+"."+svc.Namespace)
 		}
 
 		out = append(out, clb.ListenerSpec{
