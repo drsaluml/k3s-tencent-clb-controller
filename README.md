@@ -84,51 +84,167 @@ spec:
 | Orphan GC (ลบ CLB ที่ไม่มี Service คู่แล้ว) | **ยังไม่ทำ** |
 | Prometheus metric ของ CLB API เอง | **ยังไม่ทำ** |
 | Helm chart | **ยังไม่ทำ** |
+| derive `--cluster-id` จาก UID ของ namespace `kube-system` อัตโนมัติ | **ยังไม่ทำ** |
+| CVM instance role (ไม่ต้องเก็บ static key) | **ยังไม่ทำ** |
 
 ยังไม่เคยรันกับ Tencent Cloud API จริง — test ทั้งหมดใช้ in-memory fake
 ก่อนขึ้น production ควรลองกับคลัสเตอร์ทดสอบตาม checklist ท้ายไฟล์
 
 ## ติดตั้ง
 
-### 1. ปิด ServiceLB (klipper) ไม่ให้แย่ง Service
+### 1. เตรียมสิทธิ์ฝั่ง Tencent Cloud
 
-ใช้ `spec.loadBalancerClass` เป็นวิธีหลัก — ServiceLB ของ K3s จะข้าม Service ที่ตั้ง class ไว้
-ทำให้ทั้งสองตัวอยู่ร่วมกันได้ (Service อื่นยังใช้ klipper ได้ตามปกติ)
+Controller เรียก API แค่ 12 ตัวนี้เท่านั้น สร้าง custom policy ชื่อ **`K3sTencentCLBController`**
 
-ถ้าอยากปิดทั้งหมด ใช้ `--disable=servicelb` ตอน start k3s server
-อย่าใช้ `--disable-cloud-controller` เพราะจะเสีย node metadata handling ของ k3s ไปด้วย
+```json
+{
+  "version": "2.0",
+  "statement": [
+    {
+      "effect": "allow",
+      "action": [
+        "clb:DescribeLoadBalancers",
+        "clb:CreateLoadBalancer",
+        "clb:DeleteLoadBalancer",
+        "clb:DescribeListeners",
+        "clb:CreateListener",
+        "clb:ModifyListener",
+        "clb:DeleteListener",
+        "clb:DescribeTargets",
+        "clb:RegisterTargets",
+        "clb:DeregisterTargets",
+        "clb:DescribeTaskStatus",
+        "cvm:DescribeInstances"
+      ],
+      "resource": ["*"]
+    }
+  ]
+}
+```
+
+สองตัวที่คนมักลืมและทำให้พังแบบงงๆ:
+
+- **`clb:DescribeTaskStatus`** — CLB API ทุกตัวที่เขียนเป็น async ถ้าไม่มีสิทธิ์นี้
+  controller จะไม่รู้ว่างานเสร็จหรือยัง แล้วค้างทุก operation
+- **`cvm:DescribeInstances`** — `RegisterTargets` รับ `ins-xxxx` ไม่ใช่ IP และ K3s ตั้ง
+  `providerID` เป็น `k3s://<node-name>` ที่ใช้หา CVM ไม่ได้
+
+จากนั้นสร้าง sub-user (**อย่าใช้ key ของ root account**)
+
+| อย่าง | ชื่อที่แนะนำ | เหตุผล |
+|---|---|---|
+| Policy | `K3sTencentCLBController` | ใช้ร่วมกันได้ทุกคลัสเตอร์ มีชุดเดียวพอ |
+| User | `k3s-clb-controller-<cluster-id>` | แยกต่อคลัสเตอร์ เพิกถอนคีย์ตัวเดียวได้โดยไม่กระทบตัวอื่น และไล่ CloudAudit ได้ |
+
+ตอนสร้าง user เลือกแค่ **Programmatic access** — controller ไม่เคยล็อกอินหน้าเว็บ
+เปิด console access ทิ้งไว้คือเพิ่มช่องโจมตีเปล่าๆ
+
+> ถ้าเจอ Event `SyncLoadBalancerFailed` ที่มี `UnauthorizedOperation` ตอน **สร้าง** CLB
+> บางบัญชีต้องมีสิทธิ์ฝั่ง tag service เพิ่มถึงจะแนบ tag ตอนสร้างได้ ลองเพิ่ม
+> `tag:AddResourceTag` `tag:DescribeResourceTagsByResourceIds` `tag:GetTags`
 
 ### 2. Credentials + manifests
 
 ```bash
+# read -rs กันคีย์ติด shell history
+read -rs -p "secret-id: "  SID; echo
+read -rs -p "secret-key: " SKEY; echo
 kubectl -n kube-system create secret generic tencentcloud-credentials \
-  --from-literal=secret-id=AKID... \
-  --from-literal=secret-key=...
+  --from-literal=secret-id="$SID" \
+  --from-literal=secret-key="$SKEY"
+unset SID SKEY
 
 # แก้ --cluster-id / --region / --vpc-id ใน deploy/manifests.yaml ก่อน
 kubectl apply -f deploy/manifests.yaml
 ```
 
-`--cluster-id` ต้องไม่ซ้ำกับคลัสเตอร์อื่นที่ใช้ Tencent account เดียวกัน
-มันคือสิ่งที่แยกว่า CLB ตัวไหนเป็นของใคร — ตั้งซ้ำแล้วสองคลัสเตอร์จะแย่ง CLB กัน
+`--region` **ต้องตรงกับภูมิภาคที่ node อยู่จริง** ถ้าผิด controller จะไปสร้าง CLB
+คนละภูมิภาคกับ node แล้วหา CVM ไม่เจอ ขึ้น Event `NodesNotResolvable` ทุก node
 
-### 3. ชี้ Traefik มาที่ controller
+controller ไม่ได้ watch secret — **เวลาหมุนคีย์ต้อง**
+`kubectl -n kube-system rollout restart deploy/clb-controller` ด้วย
+
+#### เรื่อง `--cluster-id`
+
+k3s ไม่มี cluster ID ในตัวให้ใช้ (ต่างจาก TKE ที่มี `cls-xxxxx`) จึงต้องกำหนดเอง
+มันถูกใช้สองที่: tag `k8s-cluster-id` บน CLB และชื่อ CLB
+
+| สถานการณ์ | จำเป็นไหม |
+|---|---|
+| คลัสเตอร์เดียวใน Tencent account | ไม่จำเป็นเชิงตรรกะ แต่โค้ดบังคับให้ระบุ |
+| ≥2 คลัสเตอร์ใช้ account เดียวกัน | **จำเป็นมาก** |
+
+เหตุผลของกรณีหลัง: `FindByTags` แมตช์จาก `{cluster-id, service, managed-by}`
+ถ้าสองคลัสเตอร์มี `kube-system/traefik` เหมือนกัน**และ cluster-id ตรงกัน**
+คลัสเตอร์ A จะ adopt CLB ของ B มาเป็นของตัวเอง แล้ว reconcile target ไปชี้ node ตัวเอง
+— traffic ของ B ตายทันทีโดยไม่มีอะไรเตือน
+
+### 3. ย้าย Traefik จาก klipper มาที่ CLB
+
+`spec.loadBalancerClass` ทำสองอย่างพร้อมกัน: บอก ServiceLB (klipper) ให้ปล่อย Service นี้ไป
+และบอก controller ตัวนี้ว่าต้องรับผิดชอบ ตาม API contract ของ Kubernetes เอง
+
+> "Any default load balancer implementation (e.g. cloud providers) should **ignore**
+> Services that set this field." — `k8s.io/api/core/v1` `ServiceSpec.LoadBalancerClass`
+
+**แต่ field เดียวกันนั้นบอกด้วยว่า "Once set, it can not be changed"** —
+เติม class ลง Service ที่เป็น type LoadBalancer อยู่แล้วไม่ได้ `helm upgrade` จะ error
+`field is immutable` ต้องให้ Service ผ่านการเป็น non-LoadBalancer ก่อนหนึ่งจังหวะ
+
+**ลำดับสำคัญ: patch ก่อน แล้วค่อย apply HelmChartConfig**
+ถ้าสลับกัน helm-controller จะพยายาม patch class ลง Service เดิมแล้วโดนปฏิเสธ ทำให้ job พังค้าง
 
 ```bash
+# 0. เช็คก่อนว่า controller พร้อมรับช่วง — ถ้ายังไม่รัน จะเหลือสภาพที่ klipper ก็ไปแล้ว
+#    ของเราก็ไม่มา ซึ่งแย่กว่าตอนเริ่ม
+kubectl -n kube-system get deploy clb-controller
+kubectl -n kube-system logs deploy/clb-controller --tail=20   # ต้องเห็น "starting clb controller"
+kubectl -n kube-system get svc traefik -o yaml > /tmp/traefik-svc-backup.yaml
+
+# 1. ปลด LoadBalancer ออก — apiserver จะ wipe loadBalancerClass/nodePort/healthCheckNodePort ให้เอง
+kubectl -n kube-system patch svc traefik -p '{"spec":{"type":"ClusterIP"}}'
+
+# 2. กลับมาพร้อม class
+kubectl -n kube-system patch svc traefik -p '{
+  "spec": {
+    "type": "LoadBalancer",
+    "loadBalancerClass": "clb.tencentcloud.com/external",
+    "externalTrafficPolicy": "Local"
+  }
+}'
+
+# 3. ค่อย apply HelmChartConfig ให้ helm reconcile รอบหน้าไม่ patch ทับ
 kubectl apply -f deploy/traefik-helmchartconfig.yaml
 ```
 
-## สิทธิ์ CAM ที่ต้องการ
+วิธีสองจังหวะนี้ทำให้ **ClusterIP และ DNS ไม่หาย** ต่างจากการ `delete svc` แล้วรอสร้างใหม่
+แต่ `nodePort` จะถูก re-allocate เลขใหม่ — ถ้ามี security group หรือ firewall rule ที่
+hardcode nodePort เดิมไว้ ต้องตามไปแก้ (controller อ่านค่าใหม่เองอยู่แล้ว)
 
-Controller เรียก API แค่เท่านี้ ตั้ง policy ให้แคบที่สุดได้ตามนี้
+**ยืนยัน**
 
-| Product | Actions |
-|---|---|
-| `clb` | `DescribeLoadBalancers` `CreateLoadBalancer` `DeleteLoadBalancer` `DescribeListeners` `CreateListener` `ModifyListener` `DeleteListener` `DescribeTargets` `RegisterTargets` `DeregisterTargets` `DescribeTaskStatus` |
-| `cvm` | `DescribeInstances` |
+```bash
+kubectl -n kube-system get svc traefik -o custom-columns=\
+'CLASS:.spec.loadBalancerClass,POLICY:.spec.externalTrafficPolicy,HCPORT:.spec.healthCheckNodePort,EXTIP:.status.loadBalancer.ingress[0].ip'
 
-`cvm:DescribeInstances` จำเป็นเพราะ `RegisterTargets` รับ `InstanceId` ไม่ใช่ IP
-และ K3s ไม่ได้ตั้ง providerID ที่ใช้หา CVM ได้
+kubectl -n kube-system get pods -l svccontroller.k3s.cattle.io/svcname=traefik   # ต้องว่าง
+kubectl -n kube-system describe svc traefik | tail -20   # EnsuringLoadBalancer → EnsuredLoadBalancer
+```
+
+**Rollback** — ลบ class ตรงๆ ไม่ได้ ต้องใช้ท่าเดิมกลับทาง
+
+```bash
+kubectl -n kube-system patch svc traefik -p '{"spec":{"type":"ClusterIP"}}'
+kubectl -n kube-system patch svc traefik -p '{"spec":{"type":"LoadBalancer"}}'
+kubectl delete helmchartconfig -n kube-system traefik
+```
+
+#### `--disable=servicelb` อย่างเดียวไม่พอ
+
+มันหยุด klipper ได้จริง แต่ controller ตัวนี้เช็ค `loadBalancerClass` ก่อนจะรับผิดชอบ Service
+Service ที่ไม่มี class จะถูกข้ามทั้งคู่ แล้ว EXTERNAL-IP ค้าง `<pending>` ตลอด — **ยังไงก็ต้องตั้ง class**
+
+และอย่าใช้ `--disable-cloud-controller` เพราะจะเสีย node metadata handling ของ k3s ไปด้วย
 
 ## Container image
 

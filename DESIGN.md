@@ -270,8 +270,29 @@ clb.tencentcloud.com/security-groups
 **วิธีที่แนะนำ: ใช้ `loadBalancerClass`** — ServiceLB ของ K3s จะข้าม Service ที่มี
 `spec.loadBalancerClass` ตั้งไว้ ทำให้ทั้งสองตัวอยู่ร่วมกันได้ (ยังใช้ klipper กับ Service อื่นได้)
 
-**Fallback ที่การันตี:** `--disable=servicelb` ตอน start k3s server
+พฤติกรรมนี้เป็นสัญญาระดับ API ของ Kubernetes เอง ไม่ใช่รายละเอียดเฉพาะของ k3s —
+`ServiceSpec.LoadBalancerClass` ระบุว่า *"Any default load balancer implementation
+(e.g. cloud providers) should ignore Services that set this field."*
+
+**`--disable=servicelb` ไม่ใช่ทางเลือกแทน** — controller ตัวนี้เช็ค `loadBalancerClass`
+ก่อนจะรับผิดชอบ Service ปิด klipper เฉยๆ แล้วไม่ตั้ง class จะได้ Service ที่ไม่มีใครดูแล
+ค้าง `<pending>` ตลอด การตั้ง class จำเป็นเสมอ ส่วน `--disable=servicelb` เป็นแค่
+มาตรการเสริมถ้าอยากปิด klipper ทั้งระบบ
 (อย่าใช้ `--disable-cloud-controller` — จะเสีย node metadata handling ของ k3s ไปด้วย)
+
+#### ผลพวงที่ต้องออกแบบขั้นตอน migration รองรับ
+
+field เดียวกันนั้นระบุด้วยว่า **"Once set, it can not be changed"** และ validation
+ถือว่า `nil → value` ก็คือการเปลี่ยน แปลว่า **เติม class ลง Service ที่เป็น type
+LoadBalancer อยู่แล้วไม่ได้**
+
+คลัสเตอร์ที่มี Traefik รันอยู่ก่อนจึงต้องพา Service ผ่านสถานะ non-LoadBalancer
+หนึ่งจังหวะ (`ClusterIP` → กลับมา `LoadBalancer` พร้อม class) ซึ่งดีกว่าการ
+`delete svc` ตรงที่ ClusterIP กับ DNS ไม่หาย เสียแค่ nodePort ที่ถูก re-allocate
+
+และลำดับกับ HelmChartConfig สำคัญ: **patch ก่อน แล้วค่อย apply HelmChartConfig**
+ถ้า apply ก่อน helm-controller จะพยายาม patch class ลง Service เดิม โดน apiserver
+ปฏิเสธ แล้ว helm job ค้างในสถานะ failed
 
 ### 10.2 Traefik ใน K3s ถูก deploy ผ่าน HelmChart → แก้ผ่าน HelmChartConfig
 
@@ -321,8 +342,21 @@ rules:
 ### 10.4 Credentials & CAM
 
 Secret → env `TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY` / `TENCENTCLOUD_REGION`
-CAM policy จำกัดเฉพาะ action ใน §8 และ resource-level condition บน tag `k8s-cluster-id`
-ถ้ารันบน CVM ที่ผูก role ไว้ → รองรับ instance role provider (ไม่ต้องเก็บ key)
+CAM policy จำกัดเฉพาะ 12 action ใน §8 (policy JSON เต็มอยู่ใน README)
+
+การตั้งชื่อ: policy ตัวเดียวใช้ร่วมทุกคลัสเตอร์ (`K3sTencentCLBController`) แต่
+**sub-user แยกต่อคลัสเตอร์** (`k3s-clb-controller-<cluster-id>`) เพื่อให้เพิกถอนคีย์
+ของคลัสเตอร์เดียวได้โดยไม่กระทบตัวอื่น และไล่ CloudAudit ย้อนได้ว่าใครแตะ CLB
+เปิดสิทธิ์แบบ programmatic access อย่างเดียว — controller ไม่เคยล็อกอิน console
+
+การจำกัด resource ด้วย condition บน tag `k8s-cluster-id` ทำได้เป็นชั้นเสริม แต่
+`CreateLoadBalancer` ยังต้องเป็น `*` อยู่ดีเพราะตอนตรวจสิทธิ์ resource ยังไม่เกิด
+
+ยังไม่รองรับ instance role provider (รันบน CVM ที่ผูก role แล้วไม่ต้องเก็บ key) —
+เป็นงานที่ควรทำต่อ เพราะตัดปัญหาการหมุนคีย์ทิ้งได้ทั้งหมด
+
+**ข้อจำกัดปัจจุบัน:** controller ไม่ได้ watch secret — หมุนคีย์แล้วต้อง
+`rollout restart` deployment เอง
 
 ### 10.5 Pod
 

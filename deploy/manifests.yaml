@@ -67,18 +67,19 @@ subjects:
     name: clb-controller
     namespace: kube-system
 ---
-# สร้างจริงด้วย:
+# Secret ถูกตั้งใจไม่ให้อยู่ในไฟล์นี้
+#
+# ถ้าใส่ Secret ที่มีค่า placeholder ไว้ตรงนี้ การ `kubectl apply -f manifests.yaml`
+# ครั้งถัดไปจะเขียนทับคีย์จริงด้วย placeholder เงียบๆ แล้ว controller จะ auth ไม่ผ่าน
+# โดยที่ไม่มีอะไรบอกว่าเกิดอะไรขึ้น
+#
+# สร้างแยกครั้งเดียวด้วย (read -rs กันคีย์ติด shell history):
+#
+#   read -rs -p "secret-id: "  SID; echo
+#   read -rs -p "secret-key: " SKEY; echo
 #   kubectl -n kube-system create secret generic tencentcloud-credentials \
-#     --from-literal=secret-id=AKID... --from-literal=secret-key=...
-apiVersion: v1
-kind: Secret
-metadata:
-  name: tencentcloud-credentials
-  namespace: kube-system
-type: Opaque
-stringData:
-  secret-id: REPLACE_ME
-  secret-key: REPLACE_ME
+#     --from-literal=secret-id="$SID" --from-literal=secret-key="$SKEY"
+#   unset SID SKEY
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -118,8 +119,12 @@ spec:
         - name: controller
           image: ghcr.io/drsaluml/k3s-tencent-clb-controller:latest
           args:
-            - --cluster-id=CHANGE-ME          # ต้องไม่ซ้ำกับคลัสเตอร์อื่นใน account เดียวกัน
-            - --region=ap-hongkong
+            # ต้องไม่ซ้ำกับคลัสเตอร์อื่นใน account เดียวกัน ไม่งั้นสองคลัสเตอร์
+            # จะมองเห็น CLB ของกันและกันจาก tag แล้วแย่งกัน reconcile
+            - --cluster-id=CHANGE-ME
+            # ต้องตรงกับภูมิภาคที่ node อยู่จริง ผิดแล้วจะสร้าง CLB คนละภูมิภาค
+            # กับ node แล้วหา CVM ไม่เจอ ขึ้น NodesNotResolvable ทุก node
+            - --region=CHANGE-ME
             - --vpc-id=vpc-CHANGEME
             # - --default-subnet-id=subnet-xxxx   # จำเป็นถ้าจะใช้ internal LB
             - --leader-elect=true
