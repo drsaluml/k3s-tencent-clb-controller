@@ -341,6 +341,53 @@ func TestReconcile_AdoptedLoadBalancerSurvivesServiceDeletion(t *testing.T) {
 	}
 }
 
+// บางภูมิภาค (ap-bangkok) ให้ CLB เป็นแบบ DNS — LoadBalancerVips ว่าง มีแต่ Domain
+// ถ้าอ่านแต่ VIP อย่างเดียว Service จะค้าง <pending> ตลอดกาลทั้งที่ CLB ใช้งานได้จริง
+func TestReconcile_UsesHostnameWhenLBHasNoVIP(t *testing.T) {
+	svc := traefikService()
+	r, fake, c := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
+
+	lbID, err := fake.Create(context.Background(), clb.CreateSpec{
+		Name: "domain-only",
+		Type: clb.LBTypeOpen,
+		Tags: config.OwnershipTags(svc, testClusterID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.LBs[lbID].VIPs = nil
+	fake.LBs[lbID].Domain = "lb-x.clb.th-tencentclb.com"
+
+	reconcileOnce(t, r, svc)
+
+	ing := getService(t, c, svc).Status.LoadBalancer.Ingress
+	if len(ing) != 1 || ing[0].Hostname != "lb-x.clb.th-tencentclb.com" {
+		t.Fatalf("expected the CLB domain in status.loadBalancer.ingress, got %+v", ing)
+	}
+}
+
+// CLB ที่ไม่มีทั้ง IP และ domain ยังเรียกใช้ไม่ได้ — ห้ามรายงานว่าสำเร็จ
+func TestReconcile_DoesNotClaimSuccessWithoutAnAddress(t *testing.T) {
+	svc := traefikService()
+	r, fake, c := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
+
+	lbID, err := fake.Create(context.Background(), clb.CreateSpec{
+		Name: "addressless",
+		Type: clb.LBTypeOpen,
+		Tags: config.OwnershipTags(svc, testClusterID),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.LBs[lbID].VIPs = nil
+
+	reconcileOnce(t, r, svc)
+
+	if ing := getService(t, c, svc).Status.LoadBalancer.Ingress; len(ing) != 0 {
+		t.Fatalf("nothing should be written to status without an address, got %+v", ing)
+	}
+}
+
 func strPtr(s string) *string { return &s }
 
 func containsString(list []string, s string) bool {

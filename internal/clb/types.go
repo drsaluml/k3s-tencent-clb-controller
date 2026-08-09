@@ -5,10 +5,13 @@ import "context"
 // LoadBalancer คือ CLB instance ที่ normalize มาจาก SDK แล้ว
 // controller ไม่ควรเห็น struct ของ tencentcloud-sdk-go โดยตรง
 type LoadBalancer struct {
-	ID     string
-	Name   string
-	Type   string // OPEN | INTERNAL
-	VIPs   []string
+	ID   string
+	Name string
+	Type string // OPEN | INTERNAL
+	VIPs []string
+	// Domain มีค่าเมื่อภูมิภาคนั้นให้ CLB เป็นแบบ DNS แทนที่จะเป็น IP
+	// (เช่น ap-bangkok) — กรณีนี้ VIPs จะว่างและต้องใช้ Domain แทน
+	Domain string
 	Status uint64 // 0 = กำลังสร้าง, 1 = พร้อมใช้งาน
 	Tags   map[string]string
 }
@@ -22,6 +25,12 @@ func (l *LoadBalancer) VIP() string {
 		return ""
 	}
 	return l.VIPs[0]
+}
+
+// HasAddress บอกว่า CLB มีที่อยู่ให้ client ใช้แล้วหรือยัง
+// ไม่มีทั้ง IP และ domain = ยังเรียกใช้ไม่ได้ ต้อง requeue ไม่ใช่ประกาศว่าเสร็จ
+func (l *LoadBalancer) HasAddress() bool {
+	return l.VIP() != "" || l.Domain != ""
 }
 
 // CreateSpec คือทุกอย่างที่ต้องรู้ตอนสร้าง CLB

@@ -388,6 +388,7 @@ func convertLB(lb *sdk.LoadBalancer) LoadBalancer {
 		ID:     deref(lb.LoadBalancerId),
 		Name:   deref(lb.LoadBalancerName),
 		Type:   deref(lb.LoadBalancerType),
+		Domain: deref(lb.Domain),
 		Status: deref(lb.Status),
 		Tags:   map[string]string{},
 	}

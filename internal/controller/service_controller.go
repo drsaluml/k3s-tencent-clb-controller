@@ -106,6 +106,15 @@ func (r *ServiceReconciler) reconcileNormal(ctx context.Context, svc *corev1.Ser
 		return r.retry(err)
 	}
 
+	// ไม่มีทั้ง IP และ domain = ยังเรียกใช้ไม่ได้จริง
+	// อย่าประกาศว่าเสร็จ ไม่งั้น Service ค้าง <pending> พร้อม Event ที่บอกว่าสำเร็จ
+	// ซึ่งเป็นสถานะที่ debug ยากที่สุด
+	if !lb.HasAddress() {
+		r.event(svc, corev1.EventTypeWarning, "LoadBalancerAddressPending",
+			"CLB "+lb.ID+" has neither a VIP nor a domain yet")
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+	}
+
 	if err := r.updateStatus(ctx, svc, lb); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -310,17 +319,26 @@ func (r *ServiceReconciler) reconcileTargets(ctx context.Context, svc *corev1.Se
 	return nil
 }
 
+// updateStatus เขียนที่อยู่ของ CLB ลง status.loadBalancer.ingress
+//
+// บางภูมิภาค (เช่น ap-bangkok) ให้ CLB เป็นแบบ DNS — LoadBalancerVips จะว่าง
+// และต้องใช้ Domain แทน ซึ่งตรงกับ field Hostname ของ Kubernetes
+// การอ่านแต่ VIP อย่างเดียวทำให้ Service ค้าง <pending> ตลอดกาล
 func (r *ServiceReconciler) updateStatus(ctx context.Context, svc *corev1.Service, lb *clb.LoadBalancer) error {
-	vip := lb.VIP()
-	if vip == "" {
-		return nil
+	var ingress corev1.LoadBalancerIngress
+	if vip := lb.VIP(); vip != "" {
+		ingress.IP = vip
+	} else {
+		ingress.Hostname = lb.Domain
 	}
-	if len(svc.Status.LoadBalancer.Ingress) == 1 && svc.Status.LoadBalancer.Ingress[0].IP == vip {
+
+	cur := svc.Status.LoadBalancer.Ingress
+	if len(cur) == 1 && cur[0].IP == ingress.IP && cur[0].Hostname == ingress.Hostname {
 		return nil
 	}
 
 	patch := client.MergeFrom(svc.DeepCopy())
-	svc.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: vip}}
+	svc.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{ingress}
 	if err := r.Status().Patch(ctx, svc, patch); err != nil {
 		return fmt.Errorf("updating service status: %w", err)
 	}

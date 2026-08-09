@@ -94,8 +94,14 @@ spec:
 | อ่าน config จาก ConfigMap/Secret, leader election | ผ่าน |
 | `DescribeLoadBalancers` ค้นด้วย tag | ผ่าน |
 | `CreateLoadBalancer` + รอ async task | ผ่าน |
-| `CreateListener` (HTTP health check) | เคยพังที่ `HttpCheckDomain` — แก้แล้วใน v0.3.0 **ยังไม่ยืนยันซ้ำ** |
-| `RegisterTargets` / status / การลบ | **ยังไม่ยืนยัน** |
+| `CreateListener` (HTTP health check) | ผ่าน (v0.2.1 หลังแก้ `HttpCheckDomain`) |
+| `RegisterTargets` | ผ่าน |
+| `status.loadBalancer` | เคยค้างว่างเพราะ CLB เป็นแบบ DNS — แก้แล้ว **ยังไม่ยืนยันซ้ำ** |
+| การลบ CLB ตอนลบ Service | **ยังไม่ยืนยัน** |
+
+> **CLB บางภูมิภาคเป็นแบบ DNS ไม่ใช่ IP** — `ap-bangkok` คืน `LoadBalancerVips: []`
+> แต่ให้ `Domain` มาแทน controller จึงเขียนลง `status.loadBalancer.ingress[0].hostname`
+> (แบบเดียวกับที่ AWS ELB ทำ) ไม่ใช่ `.ip` — `kubectl get svc` จะโชว์เป็นชื่อโดเมน
 
 test อัตโนมัติทั้งหมดใช้ in-memory fake — ทำ checklist ท้ายไฟล์ก่อนขึ้น production
 
