@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "สิทธิ์ทั้งหมดที่ controller ต้องใช้ — ไม่มากกว่านี้",
+    "ผูกกับ sub-user ของ controller เท่านั้น (แนะนำชื่อ k3s-clb-controller-<cluster-id>)",
+    "อย่าผูก deny-console-edit.json กับ user ตัวนี้ ไม่งั้น controller จะทำงานไม่ได้",
+    "clb:DescribeTaskStatus ขาดไม่ได้ เพราะ CLB API ที่เขียนทุกตัวเป็น async",
+    "cvm:DescribeInstances ขาดไม่ได้ เพราะ RegisterTargets รับ InstanceId ไม่ใช่ IP"
+  ],
+  "version": "2.0",
+  "statement": [
+    {
+      "effect": "allow",
+      "action": [
+        "clb:DescribeLoadBalancers",
+        "clb:CreateLoadBalancer",
+        "clb:DeleteLoadBalancer",
+        "clb:DescribeListeners",
+        "clb:CreateListener",
+        "clb:ModifyListener",
+        "clb:DeleteListener",
+        "clb:DescribeTargets",
+        "clb:RegisterTargets",
+        "clb:DeregisterTargets",
+        "clb:DescribeTaskStatus",
+        "cvm:DescribeInstances"
+      ],
+      "resource": ["*"]
+    }
+  ]
+}

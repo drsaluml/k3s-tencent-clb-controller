@@ -158,6 +158,28 @@ Controller เรียก API แค่ 12 ตัวนี้เท่านั
 > บางบัญชีต้องมีสิทธิ์ฝั่ง tag service เพิ่มถึงจะแนบ tag ตอนสร้างได้ ลองเพิ่ม
 > `tag:AddResourceTag` `tag:DescribeResourceTagsByResourceIds` `tag:GetTags`
 
+ไฟล์ policy พร้อมใช้อยู่ใน [`deploy/cam/`](deploy/cam/)
+
+#### ป้องกันคนแก้ CLB ผ่านหน้าเว็บ
+
+CLB ที่ controller ดูแลถูกกำหนดโดย Kubernetes — การไปแก้บน console จะถูก reconcile
+ทับกลับภายใน `--resync-period` (default 10 นาที) อยู่แล้ว ซึ่งทำให้เกิดสภาพที่แย่กว่าคือ
+คนแก้แล้วเห็นว่าได้ผล เดินจากไป แล้วมันย้อนกลับเองทีหลังโดยไม่มีใครรู้
+
+[`deploy/cam/deny-console-edit.json`](deploy/cam/deny-console-edit.json) ปิดช่องนั้นตั้งแต่ต้นทาง
+โดย **deny** action ที่เป็นการแก้ไข เฉพาะ CLB ที่มี tag `k8s-managed-by=k3s-tencent-clb-controller`
+
+```
+ผูกกับ:     user/group ของคนทั่วไป
+ห้ามผูกกับ:  sub-user ของ controller (ไม่งั้น controller ทำงานไม่ได้)
+```
+
+ใน CAM **deny ชนะ allow เสมอ** แม้ user จะมี `AdministratorAccess` ก็ยังแก้ไม่ได้
+และเงื่อนไขผูกกับ tag ทำให้ CLB ตัวอื่นในบัญชีเดียวกันยังแก้ได้ตามปกติ
+
+> การรองรับ tag condition ต่างกันไปในแต่ละ product — ทดสอบด้วย user จริงหนึ่งคน
+> ก่อนเชื่อว่าใช้ได้ วิธีทดสอบ: ล็อกอินด้วย user นั้นแล้วลองแก้ listener ต้องขึ้น error สิทธิ์
+
 ### 2. Deploy
 
 `deploy/manifests.yaml` **ไม่มีค่าที่ต้องแก้ก่อน apply** — ค่าที่ต่างกันในแต่ละคลัสเตอร์
@@ -411,6 +433,24 @@ kubectl -n kube-system logs deploy/clb-controller -f
 ซึ่งลบผ่าน API ไม่ได้ ต้องลบมือบน console แล้ว controller จะปล่อย finalizer เอง
 ถ้าจำเป็นจริงๆ ปลดมือด้วย `kubectl patch svc ... -p '{"metadata":{"finalizers":null}}'`
 แต่ต้องไปลบ CLB เองด้วย ไม่งั้นเหลือค้างคิดเงิน
+
+**EXTERNAL-IP ขึ้นแล้วแต่ต่อไม่ติด (connect timeout)** — CLB สร้างครบและ target ผูกแล้ว
+แต่ traffic ไม่ทะลุ สาเหตุที่พบบ่อยที่สุดคือ **security group ของ node บล็อก nodePort**
+
+โดย default traffic จาก CLB ไป backend ยังถูก security group ของ CVM ตรวจอยู่
+ต้องเปิด ingress บน SG ของ node ทุกตัว:
+
+| Port | ทำไม |
+|---|---|
+| `30000-32767` TCP | ช่วง nodePort ทั้งหมด (เลขเปลี่ยนทุกครั้งที่สร้าง Service ใหม่) |
+| `healthCheckNodePort` | อยู่ในช่วงเดียวกัน ถ้าเปิดทั้งช่วงก็ครอบคลุมแล้ว |
+
+แยกให้ชัดว่าเป็นฝั่งไหนก่อนแก้ — ยิงจากในคลัสเตอร์ ถ้าได้ผลแปลว่า k8s ปกติ เหลือแค่ SG:
+
+```bash
+kubectl run t --rm -i --restart=Never --image=curlimages/curl -- \
+  curl -sS -o /dev/null -w '%{http_code}\n' --max-time 5 http://<NODE_IP>:<nodePort>/
+```
 
 **Service ได้ IP จาก klipper แทน** — `spec.loadBalancerClass` ไม่ได้ถูกตั้ง
 เช็คด้วย `kubectl get svc traefik -o jsonpath='{.spec.loadBalancerClass}'`

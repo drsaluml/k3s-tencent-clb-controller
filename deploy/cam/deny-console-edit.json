@@ -1,0 +1,44 @@
+{
+  "_comment": [
+    "ป้องกันไม่ให้คนแก้ CLB ที่ controller ดูแลอยู่ผ่านหน้าเว็บ Tencent Cloud",
+    "ผูก policy นี้กับ user/group ของคนทั่วไป — ห้ามผูกกับ sub-user ของ controller",
+    "deny ชนะ allow เสมอใน CAM แม้ user จะมี AdministratorAccess อยู่ก็ตาม",
+    "เงื่อนไขใช้ tag ที่ controller ติดไว้ตอนสร้าง CLB ทำให้ CLB ตัวอื่นในบัญชียังแก้ได้ตามปกติ",
+    "รูปแบบค่าของ qcs:resource_tag คือ tagKey&tagValue",
+    "การรองรับ tag condition ต่างกันไปในแต่ละ product — ทดสอบกับ user จริงก่อนเชื่อว่าใช้ได้"
+  ],
+  "version": "2.0",
+  "statement": [
+    {
+      "effect": "deny",
+      "action": [
+        "clb:ModifyLoadBalancerAttributes",
+        "clb:DeleteLoadBalancer",
+        "clb:CreateListener",
+        "clb:ModifyListener",
+        "clb:DeleteListener",
+        "clb:DeleteLoadBalancerListeners",
+        "clb:RegisterTargets",
+        "clb:DeregisterTargets",
+        "clb:ModifyTargetWeight",
+        "clb:ModifyTargetPort",
+        "clb:BatchRegisterTargets",
+        "clb:BatchDeregisterTargets",
+        "clb:ModifyDomain",
+        "clb:ModifyRule",
+        "clb:CreateRule",
+        "clb:DeleteRule",
+        "clb:SetLoadBalancerSecurityGroups",
+        "clb:ReplaceCertForLoadBalancers"
+      ],
+      "resource": "*",
+      "condition": {
+        "string_equal": {
+          "qcs:resource_tag": [
+            "k8s-managed-by&k3s-tencent-clb-controller"
+          ]
+        }
+      }
+    }
+  ]
+}
