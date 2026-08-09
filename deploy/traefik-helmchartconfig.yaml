@@ -26,7 +26,7 @@ spec:
 
         # ---------------------------------------------------------------
         # SG ของ CLB — จงใจปิดไว้ก่อน ดูเหตุผลด้านล่างแล้วค่อยตัดสินใจ
-        # clb.tencentcloud.com/security-groups: "sg-c6emh36i,sg-0c08my8i"
+        clb.tencentcloud.com/security-groups: "sg-c6emh36i,sg-0c08my8i"
         # ---------------------------------------------------------------
         # sg-c6emh36i / sg-0c08my8i คือ SG ที่ผูกกับ *node* อยู่ ซึ่งคนละบทบาท
         # กับ SG ของ CLB:

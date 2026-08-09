@@ -132,7 +132,7 @@ test อัตโนมัติทั้งหมดใช้ in-memory fake �
 
 ### 1. เตรียมสิทธิ์ฝั่ง Tencent Cloud
 
-Controller เรียก API แค่ 12 ตัวนี้เท่านั้น สร้าง custom policy ชื่อ **`K3sTencentCLBController`**
+Controller เรียก API แค่ 14 ตัวนี้เท่านั้น สร้าง custom policy ชื่อ **`K3sTencentCLBController`**
 
 ```json
 {
@@ -144,6 +144,8 @@ Controller เรียก API แค่ 12 ตัวนี้เท่านั
         "clb:DescribeLoadBalancers",
         "clb:CreateLoadBalancer",
         "clb:DeleteLoadBalancer",
+        "clb:ModifyLoadBalancerAttributes",
+        "clb:SetLoadBalancerSecurityGroups",
         "clb:DescribeListeners",
         "clb:CreateListener",
         "clb:ModifyListener",
@@ -160,12 +162,21 @@ Controller เรียก API แค่ 12 ตัวนี้เท่านั
 }
 ```
 
-สองตัวที่คนมักลืมและทำให้พังแบบงงๆ:
+> ⚠️ **แก้ไฟล์ในรีโปไม่ได้เปลี่ยนอะไรบนคลาวด์** — `deploy/cam/*.json` เป็นแค่เทมเพลต
+> ต้องเอาไป **อัปเดต policy ตัวจริงบน CAM console** ที่ผูกกับ sub-user ด้วยทุกครั้ง
+> ไม่งั้น controller จะยิง API แล้วโดนปฏิเสธเงียบๆ โผล่เป็น Event บน Service เท่านั้น
+> — เสียเวลาไล่หาสาเหตุที่โค้ดทั้งที่โค้ดถูกอยู่แล้ว (เคยเกิดมาแล้ว 2026-08-09)
+
+สี่ตัวที่คนมักลืมและทำให้พังแบบงงๆ:
 
 - **`clb:DescribeTaskStatus`** — CLB API ทุกตัวที่เขียนเป็น async ถ้าไม่มีสิทธิ์นี้
   controller จะไม่รู้ว่างานเสร็จหรือยัง แล้วค้างทุก operation
 - **`cvm:DescribeInstances`** — `RegisterTargets` รับ `ins-xxxx` ไม่ใช่ IP และ K3s ตั้ง
   `providerID` เป็น `k3s://<node-name>` ที่ใช้หา CVM ไม่ได้
+- **`clb:ModifyLoadBalancerAttributes`** — ใช้ทั้ง `delete-protection` (ซึ่ง**เปิดเป็น
+  ค่าเริ่มต้น** จึงถูกเรียกกับ CLB ทุกตัว) และ `pass-to-target` ขาดแล้ว CLB สร้างได้
+  ตามปกติแต่ไม่มี protection และ traffic ไม่ทะลุ ซึ่งดูไม่ออกว่าเป็นเรื่องสิทธิ์
+- **`clb:SetLoadBalancerSecurityGroups`** — ใช้กับ annotation `security-groups`
 
 จากนั้นสร้าง sub-user (**อย่าใช้ key ของ root account**)
 
@@ -494,6 +505,7 @@ kubectl -n kube-system logs deploy/clb-controller -f
 | `InvalidConfiguration` | annotation ผิดรูป หรือ port ยังไม่ได้ nodePort — controller จะลองใหม่ทุกนาที ไม่สร้าง CLB ด้วยค่ามั่ว |
 | `NodesNotResolvable` | หา CVM ที่ตรงกับ node ไม่เจอ ถ้าเป็นบาง node จะข้ามไป ถ้าเป็นทุก node จะหยุดและ **ไม่ถอน target เดิมทิ้ง** แก้ด้วย annotation `clb.tencentcloud.com/instance-id` บน node |
 | `SyncLoadBalancerFailed` | error จาก Tencent API ดู log ประกอบ — ถ้าเป็น auth/quota controller จะ backoff 5 นาทีแทน retry รัว |
+| `SyncLoadBalancerFailed` + `UnauthorizedOperation` | **สิทธิ์ CAM ขาด ไม่ใช่บั๊ก** — ชื่อ action อยู่ในข้อความ error เลย ไปเพิ่มใน policy ตัวจริงบน console (แก้ไฟล์ในรีโปไม่พอ) แล้ว controller retry เอง |
 | `BackendSecurityGroupBypassed` | เปิด `pass-to-target` ไว้แต่ไม่ได้ผูก SG ให้ CLB — nodePort เปิดรับทุกคนที่ยิงถึง CLB ได้ |
 | `EnsuredLoadBalancer` | ทุกอย่าง sync แล้ว |
 
@@ -577,9 +589,9 @@ internal/controller/ reconciler
 - [ ] ลบ listener ทิ้งบน console แล้ว controller สร้างคืนภายใน resync period
 - [ ] ลบ Service แล้ว CLB หายจริง ไม่เหลือค้าง
 - [ ] kill pod controller ระหว่างสร้าง CLB แล้ว restart — ต้องไม่ได้ CLB สองตัว
-- [ ] อัปเดต CAM policy ของ sub-user ให้ตรงกับ `deploy/cam/controller-policy.json`
-      รอบล่าสุด — ขาด `clb:ModifyLoadBalancerAttributes` แล้ว delete-protection
-      กับ pass-to-target จะพังด้วย auth error
+- [ ] อัปเดต policy ตัวจริง **บน CAM console** ให้ตรงกับ `deploy/cam/controller-policy.json`
+      รอบล่าสุด โดยเฉพาะ `clb:ModifyLoadBalancerAttributes` และ
+      `clb:SetLoadBalancerSecurityGroups` — แก้ไฟล์ในรีโปอย่างเดียวไม่มีผลใดๆ
 - [ ] ใส่ `pass-to-target` แล้ว traffic ทะลุจริงโดยไม่ต้องแตะ SG ของ node
 - [ ] ผูก `security-groups` แล้ว traffic จากนอก SG ถูกบล็อกจริง
 - [ ] ลอง deny policy ด้วย user จริงหนึ่งคน — แก้ listener บน console ต้องขึ้น error สิทธิ์
