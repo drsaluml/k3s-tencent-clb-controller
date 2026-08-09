@@ -476,6 +476,10 @@ docker manifest inspect ghcr.io/drsaluml/k3s-tencent-clb-controller:0.1.0 >/dev/
 - **Direct-to-pod (ENI / VPC-CNI)** — เป็นของ TKE ไม่ใช่ K3s บน CVM ธรรมดา
 - **Node / Route controller** — k3s จัดการเองอยู่แล้ว
 - **Ingress resource** — ไม่แตะ
+- **`cleanup-policy: retain`** — ลบ Service = ลบ CLB เสมอ ไม่มีทางเลือกให้เก็บไว้
+  พิจารณาแล้วไม่ทำ (2026-08-09) เพราะ CLB ที่ไม่มีเจ้าของยังคิดเงินต่อและยังไม่มี
+  Orphan GC มาตามเก็บ ถ้าต้องการ CLB ที่ไม่ถูกลบให้ใช้ `existing-loadbalancer-id`
+  ซึ่ง adopt ของที่สร้างเองไว้ก่อน แล้ว controller จะไม่ลบตอน Service หายอยู่แล้ว
 
 ## หมายเหตุเชิงเทคนิค
 
