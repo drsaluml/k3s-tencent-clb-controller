@@ -96,7 +96,7 @@ derive `--cluster-id` อัตโนมัติ, CVM instance role (ยัง�
 | traffic ทะลุ CLB ถึง Traefik | ผ่าน — ต้องใช้ `pass-to-target` ดู Troubleshooting |
 | `ModifyLoadBalancerAttributes` | ผ่าน — delete protection กับ pass-to-target ติดจริง |
 | `SetLoadBalancerSecurityGroups` | ผ่าน — ผูกแล้วกรอง traffic จริง |
-| ลบ CLB ตอนลบ Service | **ยังไม่ยืนยัน** |
+| ลบ CLB ตอนลบ Service | ผ่าน — ปิด protection เอง ลบ CLB แล้วปล่อย finalizer ใน 11 วินาที |
 | CAM deny policy กันแก้จาก console | **ยังไม่ยืนยัน** — ต้องลองด้วย user จริง |
 
 > **CLB บางภูมิภาคเป็น DNS ไม่ใช่ IP** — `ap-bangkok` คืน `LoadBalancerVips: []`
@@ -484,7 +484,7 @@ internal/controller/ reconciler
 - [ ] rolling restart Traefik แล้วไม่มี downtime
 - [ ] `kubectl drain` node แล้ว target ถูกถอนออกภายในไม่กี่วินาที
 - [ ] ลบ listener ทิ้งบน console แล้ว controller สร้างคืนภายใน resync period
-- [ ] ลบ Service แล้ว CLB หายจริง ไม่เหลือค้าง
+- [x] ลบ Service แล้ว CLB หายจริง ไม่เหลือค้าง (smoke-test 2026-08-09)
 - [ ] kill pod controller ระหว่างสร้าง CLB แล้ว restart — ต้องไม่ได้ CLB สองตัว
 - [ ] ผูก `security-groups` แล้ว traffic จากนอก SG ถูกบล็อกจริง
 - [ ] ลอง deny policy ด้วย user จริงหนึ่งคน — แก้ listener บน console ต้องขึ้น error สิทธิ์
