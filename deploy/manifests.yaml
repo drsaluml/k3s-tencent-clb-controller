@@ -121,10 +121,12 @@ spec:
               app.kubernetes.io/name: clb-controller
       containers:
         - name: controller
-          # pin เป็นเวอร์ชันเสมอ อย่าใช้ :latest — controller ตัวนี้มีสิทธิ์สร้างและลบ CLB
-          # การ restart แล้วได้โค้ดคนละเวอร์ชันโดยไม่รู้ตัวคือความเสี่ยงที่ไม่คุ้ม
-          # และ rollback ก็ทำไม่ได้ถ้าไม่รู้ว่าเดิมรันอะไรอยู่
-          image: ghcr.io/drsaluml/k3s-tencent-clb-controller:v0.2.0
+          # :latest ชี้ไปที่ v-tag ล่าสุดที่ release workflow push ขึ้นไป
+          # เปลี่ยนเป็น :vX.Y.Z ได้ถ้าต้องการล็อกเวอร์ชัน
+          image: ghcr.io/drsaluml/k3s-tencent-clb-controller:latest
+          # ระบุชัดเจนแทนที่จะพึ่ง default ที่ผูกกับชื่อ tag —
+          # ทำให้ `rollout restart` ดึง image ใหม่มาเสมอ
+          imagePullPolicy: Always
           # ไฟล์นี้ไม่มีค่าที่ต้องแก้ก่อน apply เลย — ค่าที่ต่างกันในแต่ละคลัสเตอร์
           # อยู่ใน ConfigMap/Secret ที่สร้างแยก ทำให้ apply ซ้ำได้ตลอดโดยไม่ทับของเดิม
           args:
