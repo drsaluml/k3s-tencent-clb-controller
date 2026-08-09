@@ -1,0 +1,73 @@
+# Smoke test สำหรับตรวจว่า controller สร้าง CLB ได้จริง
+# ใช้ทดสอบแยกจาก Traefik เพื่อแยกปัญหาออกจากกัน
+#
+#   kubectl apply -f deploy/examples/smoke-test.yaml
+#   kubectl -n clb-smoke-test get svc echo -w          # รอ EXTERNAL-IP
+#   kubectl -n clb-smoke-test describe svc echo        # ดู Event จาก controller
+#   curl http://<EXTERNAL-IP>
+#
+# เก็บกวาดหลังเสร็จ — สำคัญ เพราะ CLB คิดเงินต่อเนื่อง:
+#   kubectl delete -f deploy/examples/smoke-test.yaml
+#   แล้วยืนยันบน console ว่า CLB หายจริง
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clb-smoke-test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: echo
+  namespace: clb-smoke-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: echo
+  template:
+    metadata:
+      labels:
+        app: echo
+    spec:
+      containers:
+        - name: echo
+          # image เล็กที่ตอบ HTTP 200 พร้อมข้อมูล request — ไม่ต้องตั้งค่าอะไร
+          image: ealen/echo-server:latest
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo
+  namespace: clb-smoke-test
+  annotations:
+    clb.tencentcloud.com/internet-charge-type: TRAFFIC_POSTPAID_BY_HOUR
+    # ตั้งต่ำสุดไว้ก่อน เป็นแค่การทดสอบ
+    clb.tencentcloud.com/internet-max-bandwidth-out: "1"
+spec:
+  type: LoadBalancer
+  # สร้างใหม่ตั้งแต่ต้นจึงตั้ง class ได้ตรงนี้เลย
+  # ไม่ติดข้อจำกัด immutable เหมือนการแก้ Service ที่มีอยู่แล้ว
+  loadBalancerClass: clb.tencentcloud.com/external
+  # Cluster ก่อนเพื่อลดตัวแปร — ถ้าอันนี้ผ่านแล้วค่อยลอง Local
+  externalTrafficPolicy: Cluster
+  selector:
+    app: echo
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
