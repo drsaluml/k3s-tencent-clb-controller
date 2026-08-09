@@ -130,12 +130,61 @@ Controller เรียก API แค่เท่านี้ ตั้ง polic
 `cvm:DescribeInstances` จำเป็นเพราะ `RegisterTargets` รับ `InstanceId` ไม่ใช่ IP
 และ K3s ไม่ได้ตั้ง providerID ที่ใช้หา CVM ได้
 
-## Build image
+## Container image
+
+Image ถูก build และ push ขึ้น GHCR อัตโนมัติเมื่อ push git tag ที่ขึ้นต้นด้วย `v`
 
 ```bash
-docker build -t ghcr.io/<you>/k3s-tencent-clb-controller:v0.1.0 .
-docker push ghcr.io/<you>/k3s-tencent-clb-controller:v0.1.0
+git tag v0.1.0
+git push origin v0.1.0
 ```
+
+จะได้ image หลาย tag พร้อมกัน (`linux/amd64` + `linux/arm64`):
+
+```
+ghcr.io/drsaluml/k3s-tencent-clb-controller:v0.1.0
+ghcr.io/drsaluml/k3s-tencent-clb-controller:0.1
+ghcr.io/drsaluml/k3s-tencent-clb-controller:latest
+```
+
+> tag `:<major>` (เช่น `:1`) จะถูกสร้างเมื่อออกจาก 0.x แล้วเท่านั้น
+> เพราะ semver ถือว่า 0.x ยัง breaking ได้ทุก minor
+
+**ครั้งแรกที่ push ต้องตั้งค่าสองอย่าง:**
+
+1. Settings → Actions → General → Workflow permissions → ต้องไม่ใช่ read-only
+   (workflow ขอ `packages: write` ไว้แล้ว แต่ถ้าตั้ง repo เป็น read-only จะถูก override)
+2. หลัง push สำเร็จ package จะเป็น **private** โดย default —
+   ถ้าอยากให้ `kubectl` ดึงได้โดยไม่ต้องมี imagePullSecret ให้ไปที่
+   หน้า package → Package settings → Change visibility → Public
+
+ไม่ต้องสร้าง PAT — workflow ใช้ `GITHUB_TOKEN` ที่ Actions ให้มาอยู่แล้ว
+
+ถ้า package เป็น private ต้องสร้าง pull secret:
+
+```bash
+kubectl -n kube-system create secret docker-registry ghcr \
+  --docker-server=ghcr.io \
+  --docker-username=<github-user> \
+  --docker-password=<PAT ที่มีสิทธิ์ read:packages>
+```
+แล้วเพิ่ม `imagePullSecrets: [{name: ghcr}]` ใน Deployment
+
+### Build เองในเครื่อง
+
+```bash
+docker build --build-arg VERSION=dev -t clb-controller:dev .
+```
+
+เวอร์ชันถูก stamp เข้า binary และถูก log ตอน start เสมอ —
+เป็นข้อมูลแรกที่ต้องการเวลา debug ว่า pod ที่รันอยู่คือ build ไหน
+
+## CI
+
+| Workflow | ทำงานเมื่อ | ทำอะไร |
+|---|---|---|
+| `.github/workflows/ci.yml` | push `main`, ทุก PR | gofmt / vet / build / `go test -race` + ลอง build image ทั้งสอง arch (ไม่ push) |
+| `.github/workflows/release.yml` | push tag `v*`, กดเอง | รัน CI ให้ผ่านก่อน แล้ว build + push ขึ้น GHCR พร้อม SBOM/provenance และสร้าง GitHub Release |
 
 ## Annotations
 

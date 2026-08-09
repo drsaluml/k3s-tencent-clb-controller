@@ -21,6 +21,10 @@ import (
 	"github.com/drsaluml/k3s-tencent-clb-controller/internal/node"
 )
 
+// version ถูก stamp ตอน build ด้วย -ldflags "-X main.version=..."
+// ค่าที่เห็นใน log ตอน start คือสิ่งเดียวที่บอกได้ว่า image ที่รันอยู่คือ build ไหน
+var version = "dev"
+
 var scheme = runtime.NewScheme()
 
 func init() {
@@ -70,6 +74,10 @@ func run() error {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	setupLog := ctrl.Log.WithName("setup")
+
+	// log เวอร์ชันก่อนทำอย่างอื่น — ถ้า startup พังทีหลัง เราจะยังรู้ว่า
+	// image ไหนพัง ซึ่งเป็นข้อมูลแรกที่ต้องการเสมอเวลา debug
+	setupLog.Info("k3s-tencent-clb-controller", "version", version)
 
 	cfg.Defaults()
 	cfg.ExcludedNodeLabels = parseLabels(excludedNodeLabels)
