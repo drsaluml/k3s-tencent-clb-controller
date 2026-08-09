@@ -17,6 +17,14 @@ type LoadBalancer struct {
 	// DeleteProtect มาจาก AttributeFlags ที่มี "DeleteProtect"
 	// เปิดแล้ว Tencent จะปฏิเสธ DeleteLoadBalancer ทุกทาง รวมถึงจาก controller เอง
 	DeleteProtect bool
+
+	// SecurityGroups คือ SG ที่ผูกกับตัว CLB เอง — คนละชุดกับ SG ของ node
+	// เรียงตามที่ Tencent คืนมา (SecureGroups ใน API)
+	SecurityGroups []string
+	// PassToTarget = "放通" ของ Tencent
+	// true  = ตรวจแค่ SG ของ CLB ตัวเดียว
+	// false = ตรวจทั้ง SG ของ CLB และ SG ของ CVM ปลายทาง
+	PassToTarget bool
 }
 
 // Ready บอกว่า CLB พร้อมรับ listener แล้วหรือยัง
@@ -135,6 +143,11 @@ type Interface interface {
 	Delete(ctx context.Context, id string) error
 	// SetDeleteProtection เปิด/ปิด "删除保护" ของ CLB
 	SetDeleteProtection(ctx context.Context, id string, on bool) error
+	// SetSecurityGroups ผูก SG ชุดใหม่ทับของเดิม "ทั้งชุด" ไม่ใช่การ merge
+	// ส่ง slice ว่าง = ถอด SG ออกจาก CLB ให้หมด
+	SetSecurityGroups(ctx context.Context, id string, sgs []string) error
+	// SetPassToTarget เปิด/ปิดการ "放通" traffic จาก CLB ไป backend
+	SetPassToTarget(ctx context.Context, id string, on bool) error
 
 	ListListeners(ctx context.Context, lbID string) ([]Listener, error)
 	CreateListener(ctx context.Context, lbID string, spec ListenerSpec) (string, error)

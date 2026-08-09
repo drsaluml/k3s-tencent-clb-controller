@@ -218,6 +218,47 @@ func (c *client) SetDeleteProtection(ctx context.Context, id string, on bool) er
 	return c.waitTask(ctx, deref(resp.Response.RequestId))
 }
 
+// SetSecurityGroups ผูก security group ให้ CLB — replace ทั้งชุด ไม่ใช่ merge
+//
+// ส่ง slice ว่างคือการถอด SG ออกทั้งหมด (API ตีความว่า "ไม่ส่ง SecurityGroups")
+// ซึ่งแปลว่า CLB รับ traffic จากทุกที่ ถ้า PassToTarget เปิดอยู่ด้วย
+// จะไม่เหลือด่านกรองเลยสักชั้น — SG ของ node ก็ถูกข้ามไปแล้ว
+func (c *client) SetSecurityGroups(ctx context.Context, id string, sgs []string) error {
+	req := sdk.NewSetLoadBalancerSecurityGroupsRequest()
+	req.LoadBalancerId = common.StringPtr(id)
+	if len(sgs) > 0 {
+		req.SecurityGroups = common.StringPtrs(sgs)
+	}
+
+	if err := c.limiter.Wait(ctx); err != nil {
+		return err
+	}
+	resp, err := c.clb.SetLoadBalancerSecurityGroupsWithContext(ctx, req)
+	if err != nil {
+		return classify(err)
+	}
+	return c.waitTask(ctx, deref(resp.Response.RequestId))
+}
+
+// SetPassToTarget เปิด/ปิดการ放通 traffic จาก CLB ไปยัง backend
+//
+// เปิดแล้ว Tencent จะไม่ตรวจ SG ของ CVM ปลายทาง ตรวจแค่ SG ของ CLB
+// ใช้แทนการไปเปิด nodePort range (30000-32767) บน SG ของ node ทุกตัว
+func (c *client) SetPassToTarget(ctx context.Context, id string, on bool) error {
+	req := sdk.NewModifyLoadBalancerAttributesRequest()
+	req.LoadBalancerId = common.StringPtr(id)
+	req.LoadBalancerPassToTarget = common.BoolPtr(on)
+
+	if err := c.limiter.Wait(ctx); err != nil {
+		return err
+	}
+	resp, err := c.clb.ModifyLoadBalancerAttributesWithContext(ctx, req)
+	if err != nil {
+		return classify(err)
+	}
+	return c.waitTask(ctx, deref(resp.Response.RequestId))
+}
+
 func (c *client) Delete(ctx context.Context, id string) error {
 	req := sdk.NewDeleteLoadBalancerRequest()
 	req.LoadBalancerIds = common.StringPtrs([]string{id})
@@ -404,12 +445,17 @@ func (c *client) DeregisterTargets(ctx context.Context, lbID, listenerID string,
 
 func convertLB(lb *sdk.LoadBalancer) LoadBalancer {
 	out := LoadBalancer{
-		ID:     deref(lb.LoadBalancerId),
-		Name:   deref(lb.LoadBalancerName),
-		Type:   deref(lb.LoadBalancerType),
-		Domain: deref(lb.Domain),
-		Status: deref(lb.Status),
-		Tags:   map[string]string{},
+		ID:           deref(lb.LoadBalancerId),
+		Name:         deref(lb.LoadBalancerName),
+		Type:         deref(lb.LoadBalancerType),
+		Domain:       deref(lb.Domain),
+		Status:       deref(lb.Status),
+		Tags:         map[string]string{},
+		PassToTarget: deref(lb.LoadBalancerPassToTarget),
+	}
+	// ชื่อ field ฝั่ง API คือ SecureGroups ไม่ใช่ SecurityGroups
+	for _, sg := range lb.SecureGroups {
+		out.SecurityGroups = append(out.SecurityGroups, deref(sg))
 	}
 	for _, v := range lb.LoadBalancerVips {
 		out.VIPs = append(out.VIPs, deref(v))

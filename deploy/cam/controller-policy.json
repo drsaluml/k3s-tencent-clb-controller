@@ -4,7 +4,9 @@
     "ผูกกับ sub-user ของ controller เท่านั้น (แนะนำชื่อ k3s-clb-controller-<cluster-id>)",
     "อย่าผูก deny-console-edit.json กับ user ตัวนี้ ไม่งั้น controller จะทำงานไม่ได้",
     "clb:DescribeTaskStatus ขาดไม่ได้ เพราะ CLB API ที่เขียนทุกตัวเป็น async",
-    "cvm:DescribeInstances ขาดไม่ได้ เพราะ RegisterTargets รับ InstanceId ไม่ใช่ IP"
+    "cvm:DescribeInstances ขาดไม่ได้ เพราะ RegisterTargets รับ InstanceId ไม่ใช่ IP",
+    "clb:ModifyLoadBalancerAttributes ใช้ทั้ง delete-protection และ pass-to-target",
+    "ไม่ต้องให้ vpc:DescribeSecurityGroupPolicies — controller ผูก SG ด้วย id เท่านั้น ไม่อ่าน rule ข้างใน"
   ],
   "version": "2.0",
   "statement": [
@@ -14,6 +16,8 @@
         "clb:DescribeLoadBalancers",
         "clb:CreateLoadBalancer",
         "clb:DeleteLoadBalancer",
+        "clb:ModifyLoadBalancerAttributes",
+        "clb:SetLoadBalancerSecurityGroups",
         "clb:DescribeListeners",
         "clb:CreateListener",
         "clb:ModifyListener",

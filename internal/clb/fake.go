@@ -83,6 +83,7 @@ func (f *Fake) Get(_ context.Context, id string) (*LoadBalancer, error) {
 	}
 	cp := *lb
 	cp.Tags = maps.Clone(lb.Tags)
+	cp.SecurityGroups = append([]string(nil), lb.SecurityGroups...)
 	return &cp, nil
 }
 
@@ -128,6 +129,40 @@ func (f *Fake) SetDeleteProtection(_ context.Context, id string, on bool) error 
 		return fmt.Errorf("load balancer %s not found", id)
 	}
 	lb.DeleteProtect = on
+	return nil
+}
+
+func (f *Fake) SetSecurityGroups(_ context.Context, id string, sgs []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail("SetSecurityGroups"); err != nil {
+		return err
+	}
+	lb, ok := f.LBs[id]
+	if !ok {
+		return fmt.Errorf("load balancer %s not found", id)
+	}
+	// replace ทั้งชุดเหมือนของจริง และ slice ว่างต้องกลายเป็น nil
+	// ไม่งั้นเทียบ drift รอบถัดไปจะเห็น [] != nil แล้วยิงซ้ำไม่จบ
+	if len(sgs) == 0 {
+		lb.SecurityGroups = nil
+		return nil
+	}
+	lb.SecurityGroups = append([]string(nil), sgs...)
+	return nil
+}
+
+func (f *Fake) SetPassToTarget(_ context.Context, id string, on bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.fail("SetPassToTarget"); err != nil {
+		return err
+	}
+	lb, ok := f.LBs[id]
+	if !ok {
+		return fmt.Errorf("load balancer %s not found", id)
+	}
+	lb.PassToTarget = on
 	return nil
 }
 

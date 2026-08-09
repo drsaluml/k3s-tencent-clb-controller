@@ -104,6 +104,34 @@ func (r *ServiceReconciler) reconcileNormal(ctx context.Context, svc *corev1.Ser
 		lb.DeleteProtect = spec.DeleteProtect
 	}
 
+	// ลำดับสำคัญ: ผูก SG ให้เสร็จก่อนแล้วค่อยเปิด pass-to-target
+	// สลับลำดับแล้วจะมีช่วงที่ SG ของ node ถูกข้ามไปแล้วแต่ SG ของ CLB ยังไม่มา
+	// ซึ่งคือช่วงที่ backend เปิดรับ traffic จากทุกที่
+	if spec.SecurityGroups != nil && !sameStrings(lb.SecurityGroups, spec.SecurityGroups) {
+		logger.Info("updating security groups", "id", lb.ID, "groups", spec.SecurityGroups)
+		if err := r.CLB.SetSecurityGroups(ctx, lb.ID, spec.SecurityGroups); err != nil {
+			r.event(svc, corev1.EventTypeWarning, "SyncLoadBalancerFailed", err.Error())
+			return r.retry(err)
+		}
+		lb.SecurityGroups = spec.SecurityGroups
+	}
+
+	if spec.PassToTarget != nil && lb.PassToTarget != *spec.PassToTarget {
+		logger.Info("updating pass-to-target", "id", lb.ID, "enabled", *spec.PassToTarget)
+		if *spec.PassToTarget && len(lb.SecurityGroups) == 0 {
+			// ไม่ใช่ error — เป็นการตั้งค่าที่ใช้ได้จริงและเป็นทางที่คนเลือกบ่อย
+			// แต่ต้องรู้ตัวว่าไม่เหลือ SG ชั้นไหนกรอง backend อีกแล้ว
+			r.event(svc, corev1.EventTypeWarning, "BackendSecurityGroupBypassed",
+				"pass-to-target is on and no security group is bound to CLB "+lb.ID+
+					": backend node ports accept traffic from anywhere the CLB can reach")
+		}
+		if err := r.CLB.SetPassToTarget(ctx, lb.ID, *spec.PassToTarget); err != nil {
+			r.event(svc, corev1.EventTypeWarning, "SyncLoadBalancerFailed", err.Error())
+			return r.retry(err)
+		}
+		lb.PassToTarget = *spec.PassToTarget
+	}
+
 	listeners, err := r.reconcileListeners(ctx, svc, lb.ID, spec)
 	if err != nil {
 		r.event(svc, corev1.EventTypeWarning, "SyncLoadBalancerFailed", err.Error())
@@ -491,4 +519,20 @@ func (r *ServiceReconciler) event(svc *corev1.Service, eventType, reason, msg st
 // serviceKey ใช้ map จาก object อื่นกลับมาเป็น Service
 func serviceKey(namespace, name string) types.NamespacedName {
 	return types.NamespacedName{Namespace: namespace, Name: name}
+}
+
+// sameStrings เทียบแบบสนใจลำดับ
+//
+// ลำดับของ security group บน CLB คือลำดับความสำคัญของ rule ไม่ใช่แค่ set
+// สลับที่กันแล้วผลลัพธ์ต่างกันจริง จึงต้องถือว่าเป็นคนละค่า
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

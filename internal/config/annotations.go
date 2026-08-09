@@ -35,6 +35,15 @@ const (
 	// (deploy/cam/deny-console-edit.json)
 	AnnoDeleteProtection = Prefix + "delete-protection"
 
+	// AnnoSecurityGroups ผูก SG กับตัว CLB เอง — คั่นด้วย comma เช่น "sg-aaa,sg-bbb"
+	// รูปแบบค่าเหมือน service.cloud.tencent.com/security-groups ของ TKE
+	// ค่าว่าง ("") = ถอด SG ออกทั้งหมด ส่วน "ไม่ใส่ annotation" = ไม่เข้าไปยุ่งเลย
+	AnnoSecurityGroups = Prefix + "security-groups"
+	// AnnoPassToTarget เปิด "放通" — CLB ส่ง traffic ถึง backend ได้โดยไม่ต้องผ่าน
+	// SG ของ node ตรวจแค่ SG ของ CLB ชั้นเดียว
+	// รูปแบบค่าเหมือน service.cloud.tencent.com/pass-to-target ของ TKE
+	AnnoPassToTarget = Prefix + "pass-to-target"
+
 	AnnoHealthCheckProtocol = Prefix + "health-check-protocol"
 	AnnoHealthCheckPath     = Prefix + "health-check-path"
 	AnnoHealthCheckDomain   = Prefix + "health-check-domain"
@@ -64,6 +73,18 @@ type LBSpec struct {
 
 	// DeleteProtect เปิด delete protection บน CLB
 	DeleteProtect bool
+
+	// SecurityGroups เป็น tri-state โดยตั้งใจ
+	//   nil            = ไม่มี annotation → ไม่แตะ SG ที่ผูกอยู่
+	//   []string{}     = annotation ค่าว่าง → ถอด SG ออกทั้งหมด
+	//   [...]          = ผูกตามรายการนี้
+	// ที่ต้องแยก nil ออกจาก empty เพราะ CLB ที่ adopt มาอาจมี SG ที่คนตั้งไว้เอง
+	// ถ้าเหมารวมว่า "ไม่มี annotation = ไม่ต้องมี SG" controller จะถอดทิ้งเงียบๆ
+	SecurityGroups []string
+	// PassToTarget เป็น nil เมื่อไม่มี annotation — เหตุผลเดียวกับ SecurityGroups
+	// การเผลอตั้งเป็น false บน CLB ที่เปิดไว้อยู่จะทำให้ traffic ตายทันที
+	// เพราะ SG ของ node กลับมาถูกตรวจอีกครั้ง
+	PassToTarget *bool
 }
 
 // Adopted บอกว่า CLB ตัวนี้เป็นของ user ไม่ใช่ของเราสร้าง
@@ -94,6 +115,18 @@ func Parse(svc *corev1.Service, cfg *Config) (LBSpec, error) {
 
 	spec.ExistingID = a[AnnoExistingLoadBalancerID]
 	spec.DeleteProtect = isTrue(a[AnnoDeleteProtection])
+
+	if sgs, ok := a[AnnoSecurityGroups]; ok {
+		parsed, err := parseSecurityGroups(sgs)
+		if err != nil {
+			return spec, err
+		}
+		spec.SecurityGroups = parsed
+	}
+	if v, ok := a[AnnoPassToTarget]; ok {
+		spec.PassToTarget = boolPtr(isTrue(v))
+	}
+
 	spec.Create = clb.CreateSpec{
 		Name:             lbName(svc, cfg.ClusterID),
 		Type:             lbType,
@@ -216,6 +249,31 @@ func listenerName(svc *corev1.Service, p corev1.ServicePort) string {
 	}
 	return fmt.Sprintf("%s-%s-%d", svc.Namespace, svc.Name, p.Port)
 }
+
+// parseSecurityGroups แปลง "sg-aaa, sg-bbb" เป็น []string
+//
+// คืน slice ที่ไม่ใช่ nil เสมอเมื่อ annotation มีอยู่ — แม้ค่าจะว่าง
+// เพราะ caller ใช้ nil เป็นสัญญาณว่า "ไม่มี annotation" ไม่ใช่ "ไม่มี SG"
+//
+// id ที่ผิดรูปทำให้ Parse ล้มพร้อม Event ดีกว่าปล่อยผ่านแล้วไปเจอ error
+// จาก Tencent ที่อ่านไม่รู้เรื่องตอน reconcile
+func parseSecurityGroups(v string) ([]string, error) {
+	out := []string{}
+	for _, part := range strings.Split(v, ",") {
+		sg := strings.TrimSpace(part)
+		if sg == "" {
+			continue
+		}
+		if !strings.HasPrefix(sg, "sg-") {
+			return nil, fmt.Errorf("annotation %s: %q is not a security group id (expected sg-xxxxxxxx)",
+				AnnoSecurityGroups, sg)
+		}
+		out = append(out, sg)
+	}
+	return out, nil
+}
+
+func boolPtr(b bool) *bool { return &b }
 
 // isTrue รับได้ทั้ง "true" และ "1" — ต้องเป็น string ใน YAML อยู่แล้ว
 // จึงมักถูกเขียนมาได้หลายแบบ

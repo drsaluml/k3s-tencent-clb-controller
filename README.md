@@ -81,6 +81,7 @@ spec:
 | `externalTrafficPolicy: Local` + healthCheckNodePort | ทำแล้ว |
 | Finalizer + กู้สถานะจาก tag เมื่อ crash | ทำแล้ว |
 | Leader election, healthz/readyz, metrics endpoint | ทำแล้ว |
+| Security group ของ CLB + `pass-to-target` | ทำแล้ว (**ยังไม่ยืนยันกับ API จริง**) |
 | Orphan GC (ลบ CLB ที่ไม่มี Service คู่แล้ว) | **ยังไม่ทำ** |
 | Prometheus metric ของ CLB API เอง | **ยังไม่ทำ** |
 | Helm chart | **ยังไม่ทำ** |
@@ -402,11 +403,23 @@ docker manifest inspect ghcr.io/drsaluml/k3s-tencent-clb-controller:0.1.0 >/dev/
 | `clb.tencentcloud.com/scheduler` | `WRR` / `LEAST_CONN` / `IP_HASH` |
 | `clb.tencentcloud.com/session-expire-time` | วินาที |
 | `clb.tencentcloud.com/delete-protection` | `"true"` เปิด 删除保护 ของ CLB — กันลบพลาดจาก console (กันแก้ไขใช้ CAM deny policy) |
+| `clb.tencentcloud.com/security-groups` | `sg-aaa,sg-bbb` ผูก SG กับตัว CLB (สูงสุด 5 ตัว, ลำดับ = ลำดับความสำคัญ) |
+| `clb.tencentcloud.com/pass-to-target` | `"true"` ให้ CLB ส่ง traffic ถึง node ได้โดยไม่ต้องผ่าน SG ของ node |
 | `clb.tencentcloud.com/health-check-protocol` | `TCP` / `HTTP` — override ค่าที่ controller เลือกให้ |
 | `clb.tencentcloud.com/health-check-path` | ใช้เมื่อ health check เป็น HTTP |
 | `clb.tencentcloud.com/health-check-domain` | Host header ของ HTTP health check (default `<svc>.<ns>`) — CLB บังคับให้มีค่า |
 | `clb.tencentcloud.com/health-check-interval` | วินาที |
 | `clb.tencentcloud.com/health-check-timeout` | วินาที |
+
+ทุกตัวใช้ prefix `clb.tencentcloud.com/` ของเราเอง ไม่รับชื่อของ CCM/TKE เป็น alias
+แต่**รูปแบบค่าเหมือนกัน** ตัวที่มีของเทียบตรงๆ คือ
+
+| ของเรา | ของ TKE ([เอกสาร](https://www.tencentcloud.com/ind/document/product/457/39142)) |
+|---|---|
+| `clb.tencentcloud.com/security-groups` | `service.cloud.tencent.com/security-groups` |
+| `clb.tencentcloud.com/pass-to-target` | `service.cloud.tencent.com/pass-to-target` |
+
+ย้ายมาจาก TKE จึงแก้แค่ prefix ค่าเดิมใช้ต่อได้เลย
 
 บน Node:
 
@@ -450,6 +463,7 @@ kubectl -n kube-system logs deploy/clb-controller -f
 | `InvalidConfiguration` | annotation ผิดรูป หรือ port ยังไม่ได้ nodePort — controller จะลองใหม่ทุกนาที ไม่สร้าง CLB ด้วยค่ามั่ว |
 | `NodesNotResolvable` | หา CVM ที่ตรงกับ node ไม่เจอ ถ้าเป็นบาง node จะข้ามไป ถ้าเป็นทุก node จะหยุดและ **ไม่ถอน target เดิมทิ้ง** แก้ด้วย annotation `clb.tencentcloud.com/instance-id` บน node |
 | `SyncLoadBalancerFailed` | error จาก Tencent API ดู log ประกอบ — ถ้าเป็น auth/quota controller จะ backoff 5 นาทีแทน retry รัว |
+| `BackendSecurityGroupBypassed` | เปิด `pass-to-target` ไว้แต่ไม่ได้ผูก SG ให้ CLB — nodePort เปิดรับทุกคนที่ยิงถึง CLB ได้ |
 | `EnsuredLoadBalancer` | ทุกอย่าง sync แล้ว |
 
 **Service ค้าง Terminating** — แปลว่าลบ CLB ไม่สำเร็จ finalizer จึงไม่ถูกปลด
@@ -462,12 +476,35 @@ kubectl -n kube-system logs deploy/clb-controller -f
 แต่ traffic ไม่ทะลุ สาเหตุที่พบบ่อยที่สุดคือ **security group ของ node บล็อก nodePort**
 
 โดย default traffic จาก CLB ไป backend ยังถูก security group ของ CVM ตรวจอยู่
-ต้องเปิด ingress บน SG ของ node ทุกตัว:
+มีสองทางแก้ เลือกทางใดทางหนึ่ง
+
+**ทาง ก. เปิด nodePort บน SG ของ node** (ต้องทำบน console — controller ไม่มีสิทธิ์แก้ SG)
 
 | Port | ทำไม |
 |---|---|
 | `30000-32767` TCP | ช่วง nodePort ทั้งหมด (เลขเปลี่ยนทุกครั้งที่สร้าง Service ใหม่) |
 | `healthCheckNodePort` | อยู่ในช่วงเดียวกัน ถ้าเปิดทั้งช่วงก็ครอบคลุมแล้ว |
+
+**ทาง ข. ให้ CLB ข้าม SG ของ node ไปเลย** — controller สั่งได้เองจาก Service
+ไม่ต้องแตะ console และไม่ต้องเปิดช่วง port กว้างๆ ทิ้งไว้บน node
+
+```yaml
+metadata:
+  annotations:
+    clb.tencentcloud.com/pass-to-target: "true"
+    # ย้ายด่านกรองมาไว้ที่ CLB แทน — ไม่ใส่ = ใครก็ตามที่ยิงถึง CLB ได้ ถึง nodePort ได้หมด
+    clb.tencentcloud.com/security-groups: "sg-xxxxxxxx"
+```
+
+`pass-to-target` แปลว่า Tencent ตรวจแค่ SG ที่ผูกกับ **CLB** ไม่ตรวจ SG ของ CVM
+ปลายทางอีก ด่านกรองจึงเหลือชั้นเดียว — ถ้าเปิดโดยไม่ผูก SG ให้ CLB เท่ากับเปิด
+nodePort ให้ทุกคนที่เข้าถึง CLB ได้ controller จะเตือนด้วย Event
+`BackendSecurityGroupBypassed` เมื่อเจอสภาพนี้ แต่ยังทำตามที่สั่ง
+
+> ทั้งสอง annotation จะถูกจัดการ**ก็ต่อเมื่อใส่ไว้เท่านั้น** — ไม่ใส่แปลว่า
+> "ไม่เข้าไปยุ่ง" ไม่ใช่ "ตั้งเป็นค่าว่าง" ทำให้ CLB ที่ adopt มาด้วย
+> `existing-loadbalancer-id` ไม่ถูกถอด SG ทิ้งเงียบๆ ส่วนค่าว่าง
+> (`security-groups: ""`) คือการสั่งถอดทั้งหมดจริงๆ
 
 แยกให้ชัดว่าเป็นฝั่งไหนก่อนแก้ — ยิงจากในคลัสเตอร์ ถ้าได้ผลแปลว่า k8s ปกติ เหลือแค่ SG:
 

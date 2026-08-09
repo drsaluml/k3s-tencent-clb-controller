@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -398,6 +399,98 @@ func TestReconcile_EnablesDeleteProtection(t *testing.T) {
 	lbID := getService(t, c, svc).Annotations[config.AnnoLoadBalancerID]
 	if !fake.LBs[lbID].DeleteProtect {
 		t.Fatal("delete protection was not enabled on the CLB")
+	}
+}
+
+func TestReconcile_BindsSecurityGroupsAndPassToTarget(t *testing.T) {
+	svc := traefikService()
+	svc.Annotations = map[string]string{
+		config.AnnoSecurityGroups: "sg-aaa, sg-bbb",
+		config.AnnoPassToTarget:   "true",
+	}
+	r, fake, c := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
+
+	reconcileOnce(t, r, svc)
+
+	lb := fake.LBs[getService(t, c, svc).Annotations[config.AnnoLoadBalancerID]]
+	if !sameStrings(lb.SecurityGroups, []string{"sg-aaa", "sg-bbb"}) {
+		t.Fatalf("security groups not bound in order, got %v", lb.SecurityGroups)
+	}
+	if !lb.PassToTarget {
+		t.Fatal("pass-to-target was not enabled on the CLB")
+	}
+}
+
+// ไม่มี annotation ต้องแปลว่า "ไม่เข้าไปยุ่ง" ไม่ใช่ "ตั้งเป็นค่าว่าง"
+// ไม่งั้น CLB ที่ adopt มาจะถูกถอด SG ทิ้งและถูกปิด pass-to-target
+// ซึ่งทำให้ traffic ตายทันทีโดยที่ Service ไม่ได้สั่งอะไรเลย
+func TestReconcile_LeavesUnmanagedSecurityGroupsAlone(t *testing.T) {
+	svc := traefikService()
+	r, fake, c := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
+
+	reconcileOnce(t, r, svc)
+
+	lbID := getService(t, c, svc).Annotations[config.AnnoLoadBalancerID]
+	fake.LBs[lbID].SecurityGroups = []string{"sg-set-by-hand"}
+	fake.LBs[lbID].PassToTarget = true
+	fake.FailNext["SetSecurityGroups"] = errors.New("controller must not touch security groups")
+	fake.FailNext["SetPassToTarget"] = errors.New("controller must not touch pass-to-target")
+
+	reconcileOnce(t, r, svc)
+
+	if !sameStrings(fake.LBs[lbID].SecurityGroups, []string{"sg-set-by-hand"}) {
+		t.Fatalf("security groups were changed, got %v", fake.LBs[lbID].SecurityGroups)
+	}
+	if !fake.LBs[lbID].PassToTarget {
+		t.Fatal("pass-to-target was turned off without being asked to")
+	}
+}
+
+// annotation ที่มีอยู่แต่ค่าว่าง = สั่งถอด SG ออกจริงๆ ต่างจากการไม่ใส่ annotation
+func TestReconcile_EmptySecurityGroupsAnnotationUnbinds(t *testing.T) {
+	svc := traefikService()
+	svc.Annotations = map[string]string{config.AnnoSecurityGroups: ""}
+	r, fake, c := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
+
+	reconcileOnce(t, r, svc)
+
+	lbID := getService(t, c, svc).Annotations[config.AnnoLoadBalancerID]
+	fake.LBs[lbID].SecurityGroups = []string{"sg-stale"}
+
+	reconcileOnce(t, r, svc)
+
+	if len(fake.LBs[lbID].SecurityGroups) != 0 {
+		t.Fatalf("security groups should have been unbound, got %v", fake.LBs[lbID].SecurityGroups)
+	}
+}
+
+// drift ที่เกิดนอก k8s ต้องถูกดึงกลับในรอบ resync ถัดไป
+func TestReconcile_RepairsSecurityGroupDrift(t *testing.T) {
+	svc := traefikService()
+	svc.Annotations = map[string]string{config.AnnoSecurityGroups: "sg-aaa"}
+	r, fake, c := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
+
+	reconcileOnce(t, r, svc)
+
+	lbID := getService(t, c, svc).Annotations[config.AnnoLoadBalancerID]
+	fake.LBs[lbID].SecurityGroups = []string{"sg-someone-else"}
+
+	reconcileOnce(t, r, svc)
+
+	if !sameStrings(fake.LBs[lbID].SecurityGroups, []string{"sg-aaa"}) {
+		t.Fatalf("drift was not repaired, got %v", fake.LBs[lbID].SecurityGroups)
+	}
+}
+
+func TestReconcile_RejectsMalformedSecurityGroupID(t *testing.T) {
+	svc := traefikService()
+	svc.Annotations = map[string]string{config.AnnoSecurityGroups: "sg-aaa,not-a-sg"}
+	r, fake, _ := newHarness(t, svc, readyNode("node-a", "10.0.0.1"))
+
+	reconcileOnce(t, r, svc)
+
+	if fake.CreateCalls != 0 {
+		t.Fatal("a CLB was created despite a malformed security group id")
 	}
 }
 
