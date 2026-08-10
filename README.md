@@ -128,10 +128,20 @@ in-memory fake)
 | listener UDP | ผ่านหลังแก้สองจุด — `DeregisterTargetRst` และ health check (ดูด้านล่าง) |
 | ลบ listener ทิ้งแล้ว controller สร้างคืน | ผ่าน — สร้างคืนใน **578 วิ** ด้วย listener id ใหม่ (`resync-period=10m`) ไม่มีอะไรเร่งให้เร็วกว่านี้เพราะการแก้ของบนคลาวด์ไม่มี watch มาบอก |
 | rolling restart Traefik | **ไม่ผ่าน — downtime ~10 วิ** วัดผ่าน Cloudflare ได้ 521 หนึ่งครั้งกับ timeout สองครั้ง ไม่ใช่บั๊ก controller แต่เป็น target churn ดูด้านล่าง |
+| ถอน finalizer ตอนลบ Service | ผ่านบน v0.2.10 — `releasing finalizer` ครั้งเดียว ไม่มี conflict ไม่มี error (ก่อนแก้เจอ 3/3 ครั้ง) ลบจบใน 17 วิ |
+| ลบ image เก่าบน GHCR อัตโนมัติ | ผ่าน — รอบจริงรอบแรกบน v0.2.10 ลบ `0.2.1`–`0.2.4` และ `:latest` ยังมี child ครบ 4 ตัว pull ได้ปกติ **แต่เหลือ 6 เวอร์ชันไม่ใช่ 5** ดูหมายเหตุใต้ตาราง |
 | kill leader ระหว่างสร้าง CLB | ผ่าน — pod ตายหลัง `CreateLoadBalancer` สำเร็จแต่ก่อนเขียน id ลง Service (`SyncLoadBalancerFailed: recording load balancer id on service: context canceled`) ตัวใหม่ค้นเจอด้วย tag แล้ว adopt ต่อ ไม่ได้สร้างซ้ำ |
 | orphan GC (report-only) | ผ่าน — รอบแรกบน v0.2.8 ได้ `sweep finished owned=1 watching=0 orphaned=0 deleted=0` ตรงกับที่เทียบกับ `DescribeLoadBalancers` เอง (CLB ที่ tag ไว้ตัวเดียว Service ยังอยู่) ยังไม่เคยรันในโหมดลบจริง |
 | `IPV6FullChain` | **บัญชีนี้ไม่รองรับ** — `Uin ... do not support create IPv6 full chain loadbalancer` ต้องขอเปิดกับ Tencent |
 | CAM deny policy กันแก้จาก console | **ยังไม่ยืนยัน** — ต้องลองด้วย user จริง |
+
+**`keep-n-tagged: 5` เหลือจริง 6 เวอร์ชัน** รอบลบจริงรอบแรก (v0.2.10) กวาด
+`0.2.1`–`0.2.4` ทิ้ง เหลือ `0.2.5`–`0.2.10` ทั้งที่ตอน dry-run บน v0.2.9 มัน
+วางแผนลบ `0.2.1`–`0.2.4` แล้วเหลือ 5 พอดี — ต่างกันหนึ่งตัว ยังไม่รู้ว่าเพราะ
+`exclude-tags: latest` ทำให้เวอร์ชันที่ถือ tag `latest` ไม่ถูกนับในโควตาหรือเปล่า
+อ่าน log ของ job `cleanup` แล้วจะรู้ (log ของ Actions อ่านแบบ anonymous ไม่ได้)
+ไม่ใช่เรื่องอันตราย แค่เก็บมากกว่าที่ตั้งไว้หนึ่งตัว ถ้าอยากได้ 5 เป๊ะให้ลด
+`keep-n-tagged` เป็น 4 หลังยืนยันสาเหตุแล้ว
 
 **UDP listener มีข้อห้ามสองข้อที่ error message ไม่ได้บอกพร้อมกัน** เจอทีละอัน
 เพราะอันแรกบังอันที่สองอยู่:
