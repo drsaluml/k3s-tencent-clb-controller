@@ -110,8 +110,6 @@ jobs:
     steps:
       - uses: dataaxiom/ghcr-cleanup-action@v1
         with:
-          # TODO: รอบแรกดู log ว่าจะลบอะไรบ้างก่อน แล้วค่อยเอาบรรทัดนี้ออก
-          dry-run: true
           keep-n-tagged: 5
           # latest คือ tag ที่ deploy/manifests.yaml ใช้ ส่วน main มาจาก
           # workflow_dispatch — กันทั้งคู่ไว้ไม่ให้ถูกนับรวมหรือถูกลบ
