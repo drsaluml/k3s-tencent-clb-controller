@@ -126,6 +126,7 @@ in-memory fake)
 | ลบ CLB ตอนลบ Service | ผ่าน — ปิด protection เอง ลบ CLB แล้วปล่อย finalizer ใน 11 วินาที |
 | CLB แบบ `INTERNAL` | ผ่าน — ได้ VIP ในซับเน็ตของ node (ต่างจาก OPEN ที่ได้ domain) |
 | listener UDP | ผ่านหลังแก้สองจุด — `DeregisterTargetRst` และ health check (ดูด้านล่าง) |
+| kill leader ระหว่างสร้าง CLB | ผ่าน — pod ตายหลัง `CreateLoadBalancer` สำเร็จแต่ก่อนเขียน id ลง Service (`SyncLoadBalancerFailed: recording load balancer id on service: context canceled`) ตัวใหม่ค้นเจอด้วย tag แล้ว adopt ต่อ ไม่ได้สร้างซ้ำ |
 | orphan GC (report-only) | **ยืนยันด้วยการเทียบเอง** — `DescribeLoadBalancers` เจอ CLB ที่ tag ไว้ตัวเดียวและ Service ของมันยังอยู่ ไม่มี orphan การที่ log เงียบจึงถูกต้อง แต่ตัว GC เองยังไม่มีหลักฐานว่าเดินครบทุกรอบจนกว่าจะได้ log `sweep finished` |
 | `IPV6FullChain` | **บัญชีนี้ไม่รองรับ** — `Uin ... do not support create IPv6 full chain loadbalancer` ต้องขอเปิดกับ Tencent |
 | CAM deny policy กันแก้จาก console | **ยังไม่ยืนยัน** — ต้องลองด้วย user จริง |
@@ -535,7 +536,8 @@ internal/controller/ reconciler
 - [ ] `kubectl drain` node แล้ว target ถูกถอนออกภายในไม่กี่วินาที
 - [ ] ลบ listener ทิ้งบน console แล้ว controller สร้างคืนภายใน resync period
 - [x] ลบ Service แล้ว CLB หายจริง ไม่เหลือค้าง (smoke-test 2026-08-09)
-- [ ] kill pod controller ระหว่างสร้าง CLB แล้ว restart — ต้องไม่ได้ CLB สองตัว
+- [x] kill pod controller ระหว่างสร้าง CLB แล้ว restart — ต้องไม่ได้ CLB สองตัว
+      (2026-08-10 ดูตารางยืนยันด้านบน)
 - [x] ผูก `security-groups` แล้ว traffic จากนอก SG ถูกบล็อกจริง
 - [ ] ลอง deny policy ด้วย user จริงหนึ่งคน — แก้ listener บน console ต้องขึ้น error สิทธิ์
 
