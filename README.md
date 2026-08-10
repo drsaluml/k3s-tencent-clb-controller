@@ -126,6 +126,7 @@ in-memory fake)
 | ลบ CLB ตอนลบ Service | ผ่าน — ปิด protection เอง ลบ CLB แล้วปล่อย finalizer ใน 11 วินาที |
 | CLB แบบ `INTERNAL` | ผ่าน — ได้ VIP ในซับเน็ตของ node (ต่างจาก OPEN ที่ได้ domain) |
 | listener UDP | ผ่านหลังแก้สองจุด — `DeregisterTargetRst` และ health check (ดูด้านล่าง) |
+| orphan GC (report-only) | **ยืนยันด้วยการเทียบเอง** — `DescribeLoadBalancers` เจอ CLB ที่ tag ไว้ตัวเดียวและ Service ของมันยังอยู่ ไม่มี orphan การที่ log เงียบจึงถูกต้อง แต่ตัว GC เองยังไม่มีหลักฐานว่าเดินครบทุกรอบจนกว่าจะได้ log `sweep finished` |
 | `IPV6FullChain` | **บัญชีนี้ไม่รองรับ** — `Uin ... do not support create IPv6 full chain loadbalancer` ต้องขอเปิดกับ Tencent |
 | CAM deny policy กันแก้จาก console | **ยังไม่ยืนยัน** — ต้องลองด้วย user จริง |
 

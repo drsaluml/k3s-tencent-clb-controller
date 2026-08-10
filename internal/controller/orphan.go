@@ -87,8 +87,12 @@ func (c *OrphanCollector) Start(ctx context.Context) error {
 //
 // error ใดๆ = ยกเลิกทั้งรอบโดยไม่ลบอะไรเลย ตั้งใจให้ conservative:
 // ข้อมูลไม่ครบแปลว่าเราไม่รู้ว่าอะไรเป็น orphan จริง
+//
+// รอบที่ไม่เจออะไรก็ยัง log สรุปหนึ่งบรรทัด เพราะโหมดรายงานอย่างเดียวที่เงียบสนิท
+// แยกไม่ออกจาก "ticker ไม่เคยยิง" — ต้องไปไล่เทียบกับ API เองถึงจะรู้
 func (c *OrphanCollector) collectOnce(ctx context.Context) error {
 	logger := log.FromContext(ctx).WithName("orphan-gc")
+	var orphaned, deleted int
 
 	// กรองด้วย managed-by + cluster-id เท่านั้น ไม่ใส่ tag ของ service
 	// เพราะเราอยากได้ "ทุกตัวของคลัสเตอร์นี้" มาเทียบกับ Service ที่มีอยู่จริง
@@ -138,6 +142,7 @@ func (c *OrphanCollector) collectOnce(ctx context.Context) error {
 			continue
 		}
 
+		orphaned++
 		if !c.Delete {
 			logger.Info("orphaned load balancer (reporting only, --orphan-gc-delete is off)",
 				"id", lb.ID, "name", lb.Name, "service", key)
@@ -149,6 +154,7 @@ func (c *OrphanCollector) collectOnce(ctx context.Context) error {
 			continue
 		}
 		logger.Info("deleted orphaned load balancer", "id", lb.ID, "name", lb.Name, "service", key)
+		deleted++
 		delete(c.firstSeen, lb.ID)
 	}
 
@@ -158,6 +164,13 @@ func (c *OrphanCollector) collectOnce(ctx context.Context) error {
 			delete(c.firstSeen, id)
 		}
 	}
+
+	// watching = ตัวที่ไม่มี Service อยู่ตอนนี้ (นับรวมทั้งที่ยังไม่ครบ grace period
+	// และที่ครบแล้วแต่ยังไม่ถูกลบเพราะ --orphan-gc-delete ปิดอยู่)
+	// orphaned = ครบ grace period แล้วในรอบนี้
+	logger.Info("sweep finished",
+		"owned", len(owned), "watching", len(c.firstSeen),
+		"orphaned", orphaned, "deleted", deleted)
 	return nil
 }
 
