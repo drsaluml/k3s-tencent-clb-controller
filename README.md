@@ -123,6 +123,8 @@ in-memory fake)
 | traffic ทะลุ CLB ถึง Traefik | ผ่าน — ต้องใช้ `pass-to-target` ดู Troubleshooting |
 | `ModifyLoadBalancerAttributes` | ผ่าน — delete protection กับ pass-to-target ติดจริง |
 | `SetLoadBalancerSecurityGroups` | ผ่าน — ผูกแล้วกรอง traffic จริง |
+| `ModifyListener` | ผ่าน (2026-08-10) — แก้ annotation health check เป็น `interval=10 timeout=5` แล้ว listener บนคลาวด์เปลี่ยนตามใน **6 วิ** เป็น action สุดท้ายใน `controller-policy.json` ที่ยังไม่เคยถูกตัว controller เรียกเอง |
+| `cordon` node แล้วถอน target | ผ่าน (2026-08-10) — `kubectl cordon` → `Spec.Unschedulable` → predicate ที่ `setup.go:105` ปลุก reconcile → deregister ใน **6 วิ** และ `uncordon` แล้วกลับมาใน **6 วิ** เท่ากัน |
 | ลบ CLB ตอนลบ Service | ผ่าน — ปิด protection เอง ลบ CLB แล้วปล่อย finalizer ใน 11 วินาที |
 | CLB แบบ `INTERNAL` | ผ่าน — ได้ VIP ในซับเน็ตของ node (ต่างจาก OPEN ที่ได้ domain) |
 | listener UDP | ผ่านหลังแก้สองจุด — `DeregisterTargetRst` และ health check (ดูด้านล่าง) |
@@ -133,7 +135,7 @@ in-memory fake)
 | kill leader ระหว่างสร้าง CLB | ผ่าน — pod ตายหลัง `CreateLoadBalancer` สำเร็จแต่ก่อนเขียน id ลง Service (`SyncLoadBalancerFailed: recording load balancer id on service: context canceled`) ตัวใหม่ค้นเจอด้วย tag แล้ว adopt ต่อ ไม่ได้สร้างซ้ำ |
 | orphan GC (report-only) | ผ่าน — รอบแรกบน v0.2.8 ได้ `sweep finished owned=1 watching=0 orphaned=0 deleted=0` ตรงกับที่เทียบกับ `DescribeLoadBalancers` เอง (CLB ที่ tag ไว้ตัวเดียว Service ยังอยู่) ยังไม่เคยรันในโหมดลบจริง |
 | `IPV6FullChain` | **บัญชีนี้ไม่รองรับ** — `Uin ... do not support create IPv6 full chain loadbalancer` ต้องขอเปิดกับ Tencent |
-| CAM deny policy กันแก้จาก console | **ยังไม่ยืนยัน** — ต้องลองด้วย user จริง |
+| CAM deny policy กันแก้จาก console | **ไม่ทดสอบ ตั้งใจข้าม** — ดู "ทำไมไม่ใช้ deny policy" ด้านล่าง |
 
 **`keep-n-tagged: 5` เหลือจริง 6 เวอร์ชัน** รอบลบจริงรอบแรก (v0.2.10) กวาด
 `0.2.1`–`0.2.4` ทิ้ง เหลือ `0.2.5`–`0.2.10` ทั้งที่ตอน dry-run บน v0.2.9 มัน
@@ -555,22 +557,40 @@ internal/controller/ reconciler
 
 ## Checklist ก่อนขึ้น production
 
-- [ ] อัปเดต policy ตัวจริง **บน CAM console** ให้ตรงกับ `deploy/cam/controller-policy.json`
+- [x] อัปเดต policy ตัวจริง **บน CAM console** ให้ตรงกับ `deploy/cam/controller-policy.json`
       รอบล่าสุด — แก้ไฟล์ในรีโปอย่างเดียวไม่มีผลใดๆ
+      (2026-08-10 ครบทั้ง 14 action แล้ว — ตัวสุดท้ายที่เหลือคือ `clb:ModifyListener`
+      ยืนยันด้วยการทำให้ listener drift จริง ดูตารางด้านบน)
 - [x] สร้าง Service แล้ว CLB โผล่จริง และ `status.loadBalancer.ingress` มีค่า
       (`ip` หรือ `hostname` แล้วแต่ภูมิภาค)
 - [x] `curl` ผ่าน CLB เข้า Traefik ได้
 - [ ] rolling restart Traefik แล้วไม่มี downtime
       **ทดสอบแล้วไม่ผ่าน (2026-08-10)** — ยังมี downtime ~10 วิ ดู "target churn"
       ด้านล่าง ต้องแก้ topology ก่อน ไม่ใช่แก้ controller
-- [ ] `kubectl drain` node แล้ว target ถูกถอนออกภายในไม่กี่วินาที
+- [x] cordon node แล้ว target ถูกถอนออกภายในไม่กี่วินาที
+      (2026-08-10 ถอนใน 6 วิ คืนใน 6 วิ) — **ใช้ `kubectl cordon` ไม่ต้อง `drain`**
+      เพราะสิ่งที่ปลุก reconcile คือ `Spec.Unschedulable` ซึ่ง cordon เซ็ตให้แล้ว
+      ส่วน drain แถมการ evict pod มาซึ่งไม่เกี่ยวกับสิ่งที่ทดสอบ
+      ทดสอบบน node ที่**ไม่ได้**เป็น target ของ Traefik (`dsaas-instance-1`)
+      จึงแยกออกจาก production ได้สนิท — target ของ `lb-f9k04p2q` ไม่ขยับแม้แต่ตัวเดียว
 - [x] ลบ listener ทิ้งบน console แล้ว controller สร้างคืนภายใน resync period
       (2026-08-10 ลบผ่าน API บน CLB ของ smoke test สร้างคืนใน 578 วิ)
 - [x] ลบ Service แล้ว CLB หายจริง ไม่เหลือค้าง (smoke-test 2026-08-09)
 - [x] kill pod controller ระหว่างสร้าง CLB แล้ว restart — ต้องไม่ได้ CLB สองตัว
       (2026-08-10 ดูตารางยืนยันด้านบน)
 - [x] ผูก `security-groups` แล้ว traffic จากนอก SG ถูกบล็อกจริง
-- [ ] ลอง deny policy ด้วย user จริงหนึ่งคน — แก้ listener บน console ต้องขึ้น error สิทธิ์
+### ทำไมไม่ใช้ deny policy
+
+`deploy/cam/deny-console-edit.json` ยังอยู่ในรีโปสำหรับคนที่ต้องการ แต่ **คลัสเตอร์นี้
+ตั้งใจไม่ผูกมัน** เหตุผล:
+
+- มันกันแค่คนแก้ CLB บนหน้าเว็บ ซึ่ง controller **ซ่อมคืนเองอยู่แล้ว** — ยืนยันมาแล้วว่า
+  ลบ listener ทิ้งก็สร้างคืนภายใน resync period
+- บัญชีนี้มี admin คนเดียว ค่าของ "กันคนอื่นแก้" จึงเกือบเป็นศูนย์
+- มีความเสี่ยงด้านกลับที่แพงกว่าประโยชน์: เผลอผูกกับ sub-user ของ controller เมื่อไหร่
+  controller ตายทันที และ tag condition ก็รองรับไม่เท่ากันทุก product
+
+ผูกเมื่อไหร่ให้ทดสอบด้วย user จริงก่อนเชื่อว่ามันทำงาน
 
 ## License
 
