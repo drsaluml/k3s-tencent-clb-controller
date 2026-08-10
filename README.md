@@ -129,7 +129,7 @@ in-memory fake)
 | ลบ listener ทิ้งแล้ว controller สร้างคืน | ผ่าน — สร้างคืนใน **578 วิ** ด้วย listener id ใหม่ (`resync-period=10m`) ไม่มีอะไรเร่งให้เร็วกว่านี้เพราะการแก้ของบนคลาวด์ไม่มี watch มาบอก |
 | rolling restart Traefik | **ไม่ผ่าน — downtime ~10 วิ** วัดผ่าน Cloudflare ได้ 521 หนึ่งครั้งกับ timeout สองครั้ง ไม่ใช่บั๊ก controller แต่เป็น target churn ดูด้านล่าง |
 | kill leader ระหว่างสร้าง CLB | ผ่าน — pod ตายหลัง `CreateLoadBalancer` สำเร็จแต่ก่อนเขียน id ลง Service (`SyncLoadBalancerFailed: recording load balancer id on service: context canceled`) ตัวใหม่ค้นเจอด้วย tag แล้ว adopt ต่อ ไม่ได้สร้างซ้ำ |
-| orphan GC (report-only) | **ยืนยันด้วยการเทียบเอง** — `DescribeLoadBalancers` เจอ CLB ที่ tag ไว้ตัวเดียวและ Service ของมันยังอยู่ ไม่มี orphan การที่ log เงียบจึงถูกต้อง แต่ตัว GC เองยังไม่มีหลักฐานว่าเดินครบทุกรอบจนกว่าจะได้ log `sweep finished` |
+| orphan GC (report-only) | ผ่าน — รอบแรกบน v0.2.8 ได้ `sweep finished owned=1 watching=0 orphaned=0 deleted=0` ตรงกับที่เทียบกับ `DescribeLoadBalancers` เอง (CLB ที่ tag ไว้ตัวเดียว Service ยังอยู่) ยังไม่เคยรันในโหมดลบจริง |
 | `IPV6FullChain` | **บัญชีนี้ไม่รองรับ** — `Uin ... do not support create IPv6 full chain loadbalancer` ต้องขอเปิดกับ Tencent |
 | CAM deny policy กันแก้จาก console | **ยังไม่ยืนยัน** — ต้องลองด้วย user จริง |
 
