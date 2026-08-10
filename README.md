@@ -126,6 +126,7 @@ in-memory fake)
 | ลบ CLB ตอนลบ Service | ผ่าน — ปิด protection เอง ลบ CLB แล้วปล่อย finalizer ใน 11 วินาที |
 | CLB แบบ `INTERNAL` | ผ่าน — ได้ VIP ในซับเน็ตของ node (ต่างจาก OPEN ที่ได้ domain) |
 | listener UDP | ผ่านหลังแก้สองจุด — `DeregisterTargetRst` และ health check (ดูด้านล่าง) |
+| ลบ listener ทิ้งแล้ว controller สร้างคืน | ผ่าน — สร้างคืนใน **578 วิ** ด้วย listener id ใหม่ (`resync-period=10m`) ไม่มีอะไรเร่งให้เร็วกว่านี้เพราะการแก้ของบนคลาวด์ไม่มี watch มาบอก |
 | rolling restart Traefik | **ไม่ผ่าน — downtime ~10 วิ** วัดผ่าน Cloudflare ได้ 521 หนึ่งครั้งกับ timeout สองครั้ง ไม่ใช่บั๊ก controller แต่เป็น target churn ดูด้านล่าง |
 | kill leader ระหว่างสร้าง CLB | ผ่าน — pod ตายหลัง `CreateLoadBalancer` สำเร็จแต่ก่อนเขียน id ลง Service (`SyncLoadBalancerFailed: recording load balancer id on service: context canceled`) ตัวใหม่ค้นเจอด้วย tag แล้ว adopt ต่อ ไม่ได้สร้างซ้ำ |
 | orphan GC (report-only) | **ยืนยันด้วยการเทียบเอง** — `DescribeLoadBalancers` เจอ CLB ที่ tag ไว้ตัวเดียวและ Service ของมันยังอยู่ ไม่มี orphan การที่ log เงียบจึงถูกต้อง แต่ตัว GC เองยังไม่มีหลักฐานว่าเดินครบทุกรอบจนกว่าจะได้ log `sweep finished` |
@@ -553,7 +554,8 @@ internal/controller/ reconciler
       **ทดสอบแล้วไม่ผ่าน (2026-08-10)** — ยังมี downtime ~10 วิ ดู "target churn"
       ด้านล่าง ต้องแก้ topology ก่อน ไม่ใช่แก้ controller
 - [ ] `kubectl drain` node แล้ว target ถูกถอนออกภายในไม่กี่วินาที
-- [ ] ลบ listener ทิ้งบน console แล้ว controller สร้างคืนภายใน resync period
+- [x] ลบ listener ทิ้งบน console แล้ว controller สร้างคืนภายใน resync period
+      (2026-08-10 ลบผ่าน API บน CLB ของ smoke test สร้างคืนใน 578 วิ)
 - [x] ลบ Service แล้ว CLB หายจริง ไม่เหลือค้าง (smoke-test 2026-08-09)
 - [x] kill pod controller ระหว่างสร้าง CLB แล้ว restart — ต้องไม่ได้ CLB สองตัว
       (2026-08-10 ดูตารางยืนยันด้านบน)
