@@ -86,3 +86,38 @@ jobs:
             ```bash
             docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
             ```
+
+  # เก็บ image ไว้ 5 เวอร์ชันล่าสุด ที่เหลือลบทิ้ง
+  #
+  # ห้ามใช้ actions/delete-package-versions แบบ delete-only-untagged-versions
+  # ที่เห็นกันทั่วไป — เรา push multi-arch พร้อม provenance/sbom หนึ่ง tag จึงกลาย
+  # เป็นหลาย package version โดยมีแค่ manifest list ที่ถือ tag ส่วน child manifest
+  # ของ amd64/arm64 กับ attestation ไม่มี tag การกวาด untagged ทิ้งจะทำให้ :latest
+  # ยังอยู่ในหน้า package แต่ pull ไม่ได้ และจะไปโผล่ตอน rollout ไม่ใช่ตอนรัน workflow
+  # action ตัวนี้ไล่จาก manifest list ลงไปหา child แล้วเว้นตัวที่ยังถูกอ้างอิงอยู่
+  cleanup:
+    needs: publish
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    # image ขึ้น GHCR ไปแล้วตั้งแต่ job ก่อนหน้า เก็บกวาดพลาดไม่ควรทำให้ release แดง
+    continue-on-error: true
+    # action ตัวนี้รันพร้อมกันบน package เดียวกันไม่ได้
+    concurrency:
+      group: ghcr-cleanup-${{ github.repository }}
+
+    steps:
+      - uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          # TODO: รอบแรกดู log ว่าจะลบอะไรบ้างก่อน แล้วค่อยเอาบรรทัดนี้ออก
+          dry-run: true
+          keep-n-tagged: 5
+          # latest คือ tag ที่ deploy/manifests.yaml ใช้ ส่วน main มาจาก
+          # workflow_dispatch — กันทั้งคู่ไว้ไม่ให้ถูกนับรวมหรือถูกลบ
+          exclude-tags: latest,main
+          delete-untagged: true
+          # multi-arch ที่ child หายไปบางส่วนคือซากที่ pull ไม่ได้อยู่แล้ว
+          delete-partial-images: true
+          # ตรวจว่า manifest ที่เหลือยังครบ child หลังลบเสร็จ
+          validate: true
