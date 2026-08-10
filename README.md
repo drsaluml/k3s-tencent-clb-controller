@@ -126,6 +126,7 @@ in-memory fake)
 | ลบ CLB ตอนลบ Service | ผ่าน — ปิด protection เอง ลบ CLB แล้วปล่อย finalizer ใน 11 วินาที |
 | CLB แบบ `INTERNAL` | ผ่าน — ได้ VIP ในซับเน็ตของ node (ต่างจาก OPEN ที่ได้ domain) |
 | listener UDP | ผ่านหลังแก้สองจุด — `DeregisterTargetRst` และ health check (ดูด้านล่าง) |
+| rolling restart Traefik | **ไม่ผ่าน — downtime ~10 วิ** วัดผ่าน Cloudflare ได้ 521 หนึ่งครั้งกับ timeout สองครั้ง ไม่ใช่บั๊ก controller แต่เป็น target churn ดูด้านล่าง |
 | kill leader ระหว่างสร้าง CLB | ผ่าน — pod ตายหลัง `CreateLoadBalancer` สำเร็จแต่ก่อนเขียน id ลง Service (`SyncLoadBalancerFailed: recording load balancer id on service: context canceled`) ตัวใหม่ค้นเจอด้วย tag แล้ว adopt ต่อ ไม่ได้สร้างซ้ำ |
 | orphan GC (report-only) | **ยืนยันด้วยการเทียบเอง** — `DescribeLoadBalancers` เจอ CLB ที่ tag ไว้ตัวเดียวและ Service ของมันยังอยู่ ไม่มี orphan การที่ log เงียบจึงถูกต้อง แต่ตัว GC เองยังไม่มีหลักฐานว่าเดินครบทุกรอบจนกว่าจะได้ log `sweep finished` |
 | `IPV6FullChain` | **บัญชีนี้ไม่รองรับ** — `Uin ... do not support create IPv6 full chain loadbalancer` ต้องขอเปิดกับ Tencent |
@@ -442,6 +443,22 @@ build เองในเครื่อง: `docker build --build-arg VERSION=de
 ชั้น tag คือสิ่งที่กู้เคส "สร้าง CLB สำเร็จแล้ว crash ก่อนเขียน annotation" ไม่งั้นได้
 CLB ผีที่คิดเงินไปเรื่อยๆ (มี test ครอบไว้)
 
+**target churn ทำให้ rolling restart มี downtime** — วัดได้ ~10 วิ (2026-08-10)
+เกิดจาก `externalTrafficPolicy: Local` + pod ย้าย node ทุกครั้งที่ deploy ไม่ใช่บั๊ก
+ของ controller เพราะ target ของ CLB คือ *node* ไม่ใช่ pod พอ pod ย้ายจาก node A
+ไป node B ต้องมีช่วงที่ CLB ยังชี้ A ที่ไม่มี pod แล้ว log ยืนยันว่า controller
+ตามแก้ให้ 4 รอบ (`targets synced registered=1 deregistered=1`) แต่ระหว่างนั้น
+request ที่วิ่งเข้า node เดิมตาย
+
+ที่ทำแล้วช่วยได้บางส่วนคือขยาย Traefik เป็น 2 replica คนละ node — เดิม replica เดียว
+ทำให้ตอน restart ไม่เหลือ node ที่รับ traffic ได้เลย
+
+ที่ยังแก้ไม่จบคือ pod **ย้าย node** ทุกรอบ เพราะ `podAntiAffinity` เป็น `required`
+และมี 3 node ให้ 2 replica พอ `maxSurge: 1` สร้าง pod ใหม่ scheduler จะเลือก node
+ที่ว่างเสมอ ทางที่ควรลองต่อ: ทำให้ตำแหน่ง pod นิ่งข้ามการ deploy (replica เท่าจำนวน
+node) หรือยอมสละ source IP แล้วกลับไปใช้ `externalTrafficPolicy: Cluster`
+ซึ่ง node ไหนก็รับ traffic ได้ ไม่ต้องมี target churn เลย
+
 ## Troubleshooting
 
 ทุกอย่างที่สำคัญถูกรายงานเป็น Event บน Service
@@ -533,6 +550,8 @@ internal/controller/ reconciler
       (`ip` หรือ `hostname` แล้วแต่ภูมิภาค)
 - [x] `curl` ผ่าน CLB เข้า Traefik ได้
 - [ ] rolling restart Traefik แล้วไม่มี downtime
+      **ทดสอบแล้วไม่ผ่าน (2026-08-10)** — ยังมี downtime ~10 วิ ดู "target churn"
+      ด้านล่าง ต้องแก้ topology ก่อน ไม่ใช่แก้ controller
 - [ ] `kubectl drain` node แล้ว target ถูกถอนออกภายในไม่กี่วินาที
 - [ ] ลบ listener ทิ้งบน console แล้ว controller สร้างคืนภายใน resync period
 - [x] ลบ Service แล้ว CLB หายจริง ไม่เหลือค้าง (smoke-test 2026-08-09)

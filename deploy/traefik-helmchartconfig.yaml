@@ -11,6 +11,20 @@ metadata:
   namespace: kube-system
 spec:
   valuesContent: |-
+    # replica เดียวไม่มีทางผ่าน "rolling restart แล้วไม่มี downtime" ได้เลย
+    # เพราะ externalTrafficPolicy: Local ทำให้ node ที่ไม่มี pod ตอบ 503
+    # พอ pod เดียวถูก restart ก็ไม่เหลือ node ไหนที่ CLB ส่งเข้าได้
+    deployment:
+      replicas: 2
+    # ต้องบังคับให้อยู่คนละ node ด้วย ถ้า 2 pod ไปกองบน node เดียวกัน
+    # CLB ก็ยังมี target ตัวเดียวอยู่ดี ไม่ได้อะไรขึ้นมา
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: traefik
+            topologyKey: kubernetes.io/hostname
     service:
       spec:
         loadBalancerClass: clb.tencentcloud.com/external
