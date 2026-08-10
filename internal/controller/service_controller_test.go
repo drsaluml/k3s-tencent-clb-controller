@@ -7,14 +7,17 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	fakeclient "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/drsaluml/k3s-tencent-clb-controller/internal/clb"
 	"github.com/drsaluml/k3s-tencent-clb-controller/internal/config"
@@ -89,6 +92,8 @@ func newHarness(t *testing.T, objs ...client.Object) (*ServiceReconciler, *clb.F
 		Nodes:    &fakeResolver{missing: map[string]bool{}},
 		Recorder: record.NewFakeRecorder(100),
 		Config:   cfg,
+		// fake client ไม่มี cache แยก อ่านจากตัวเดียวกันได้เลย
+		APIReader: c,
 	}, fake, c
 }
 
@@ -305,6 +310,67 @@ func TestReconcile_DeletesLoadBalancerAndReleasesFinalizer(t *testing.T) {
 	err := c.Get(context.Background(), client.ObjectKeyFromObject(svc), &out)
 	if err == nil {
 		t.Fatalf("service should be gone once the finalizer is released, still have %v", out.Finalizers)
+	}
+}
+
+// cleanup() ใช้เวลาหลายวินาที ระหว่างนั้น Service ถูกแก้จากที่อื่นได้
+// การถอน finalizer จึงชน conflict เป็นเรื่องปกติ ไม่ใช่ความผิดพลาด
+//
+// ของจริงเจอทุกครั้งที่ลบ Service (3/3 ครั้ง 2026-08-10) เดิมมันหลุดออกไปเป็น
+// error ของ reconcile ทำให้วนกลับมาทำ cleanup ใหม่ทั้งชุด = ยิง CLB API ซ้ำ
+func TestReconcile_RetriesFinalizerRemovalOnConflict(t *testing.T) {
+	svc := traefikService()
+	s := testScheme(t)
+
+	var updates int
+	c := fakeclient.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(svc, readyNode("node-a", "10.0.0.1")).
+		WithStatusSubresource(&corev1.Service{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				// ชนเฉพาะตอนถอน finalizer ไม่ใช่ตอนใส่
+				if o, ok := obj.(*corev1.Service); ok && o.DeletionTimestamp != nil {
+					updates++
+					if updates == 1 {
+						return apierrors.NewConflict(
+							schema.GroupResource{Resource: "services"}, o.Name,
+							errors.New("the object has been modified"))
+					}
+				}
+				return cl.Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+
+	fake := clb.NewFake()
+	cfg := &config.Config{ClusterID: testClusterID, Region: "ap-hongkong", VpcID: "vpc-test"}
+	cfg.Defaults()
+	r := &ServiceReconciler{
+		Client: c, CLB: fake, Nodes: &fakeResolver{missing: map[string]bool{}},
+		Recorder: record.NewFakeRecorder(100), Config: cfg, APIReader: c,
+	}
+
+	reconcileOnce(t, r, svc)
+	lbID := getService(t, c, svc).Annotations[config.AnnoLoadBalancerID]
+	if err := c.Delete(context.Background(), getService(t, c, svc)); err != nil {
+		t.Fatal(err)
+	}
+
+	// รอบเดียวต้องจบ ไม่ใช่ปล่อย error ให้ reconcile วนกลับมาใหม่
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: client.ObjectKeyFromObject(svc)})
+	if err != nil {
+		t.Fatalf("conflict should be retried inside the reconcile, got %v", err)
+	}
+	if updates < 2 {
+		t.Fatalf("expected a retry after the conflict, saw %d update attempts", updates)
+	}
+	if _, still := fake.LBs[lbID]; still {
+		t.Fatal("CLB was left behind")
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(svc), &corev1.Service{}); err == nil {
+		t.Fatal("finalizer was never released")
 	}
 }
 

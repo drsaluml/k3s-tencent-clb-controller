@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -30,6 +31,13 @@ type ServiceReconciler struct {
 	Nodes    node.Resolver
 	Recorder record.EventRecorder
 	Config   *config.Config
+
+	// APIReader อ่านตรงจาก apiserver ไม่ผ่าน cache ของ manager
+	//
+	// ใช้เฉพาะตอนถอน finalizer ซึ่งต้องการ resourceVersion ล่าสุดจริงๆ
+	// อ่านซ้ำจาก cache หลังชน conflict มักได้ของเก่าตัวเดิมกลับมา แล้ว retry
+	// ก็ชนซ้ำจนหมดโควตา
+	APIReader client.Reader
 }
 
 func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -404,11 +412,34 @@ func (r *ServiceReconciler) reconcileDelete(ctx context.Context, svc *corev1.Ser
 	}
 
 	logger.Info("cleanup complete, releasing finalizer")
-	controllerutil.RemoveFinalizer(svc, config.Finalizer)
-	if err := r.Update(ctx, svc); err != nil {
+	if err := r.releaseFinalizer(ctx, svc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// releaseFinalizer ถอน finalizer โดยดึงของสดมาก่อนทุกครั้ง
+//
+// svc ที่ reconcile ถืออยู่ถูกอ่านมาตั้งแต่ต้นรอบ ส่วน cleanup() ใช้เวลาหลายวินาที
+// (ปิด delete protection → ลบ CLB → poll async task) ระหว่างนั้น Service ถูกแก้
+// จากที่อื่นได้ resourceVersion ที่ถืออยู่จึงเก่าและ Update ชน conflict
+//
+// ปล่อยให้ error ออกไปก็ไม่ถึงกับพัง — reconcile วนกลับมาแล้วสำเร็จในรอบถัดไป
+// แต่มันวนกลับมาทำ cleanup() ใหม่ทั้งชุด คือยิง CLB API ซ้ำเพื่อลบของที่ลบไปแล้ว
+// และโผล่เป็น log ระดับ error ทุกครั้งที่ลบ Service ทั้งที่ไม่มีอะไรผิด
+func (r *ServiceReconciler) releaseFinalizer(ctx context.Context, svc *corev1.Service) error {
+	key := client.ObjectKeyFromObject(svc)
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var fresh corev1.Service
+		if err := r.APIReader.Get(ctx, key, &fresh); err != nil {
+			// หายไปแล้ว = finalizer ถูกถอนสำเร็จและ Service ถูกลบจริง
+			return client.IgnoreNotFound(err)
+		}
+		if !controllerutil.RemoveFinalizer(&fresh, config.Finalizer) {
+			return nil
+		}
+		return r.Update(ctx, &fresh)
+	})
 }
 
 func (r *ServiceReconciler) cleanup(ctx context.Context, svc *corev1.Service) error {

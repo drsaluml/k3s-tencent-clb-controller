@@ -145,6 +145,9 @@ func run() error {
 		Nodes:    nodeResolver,
 		Recorder: mgr.GetEventRecorderFor("clb-controller"),
 		Config:   &cfg,
+		// อ่าน Service สดๆ ตอนถอน finalizer ไม่งั้น retry หลังชน conflict
+		// จะได้ของเก่าตัวเดิมจาก cache กลับมาแล้วชนซ้ำ
+		APIReader: mgr.GetAPIReader(),
 	}
 	if err := reconciler.SetupWithManager(mgr, maxConcurrent); err != nil {
 		return fmt.Errorf("setting up service controller: %w", err)
