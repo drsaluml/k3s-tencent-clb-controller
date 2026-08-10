@@ -528,15 +528,15 @@ internal/controller/ reconciler
 
 - [ ] อัปเดต policy ตัวจริง **บน CAM console** ให้ตรงกับ `deploy/cam/controller-policy.json`
       รอบล่าสุด — แก้ไฟล์ในรีโปอย่างเดียวไม่มีผลใดๆ
-- [ ] สร้าง Service แล้ว CLB โผล่จริง และ `status.loadBalancer.ingress` มีค่า
+- [x] สร้าง Service แล้ว CLB โผล่จริง และ `status.loadBalancer.ingress` มีค่า
       (`ip` หรือ `hostname` แล้วแต่ภูมิภาค)
-- [ ] `curl` ผ่าน CLB เข้า Traefik ได้
+- [x] `curl` ผ่าน CLB เข้า Traefik ได้
 - [ ] rolling restart Traefik แล้วไม่มี downtime
 - [ ] `kubectl drain` node แล้ว target ถูกถอนออกภายในไม่กี่วินาที
 - [ ] ลบ listener ทิ้งบน console แล้ว controller สร้างคืนภายใน resync period
 - [x] ลบ Service แล้ว CLB หายจริง ไม่เหลือค้าง (smoke-test 2026-08-09)
 - [ ] kill pod controller ระหว่างสร้าง CLB แล้ว restart — ต้องไม่ได้ CLB สองตัว
-- [ ] ผูก `security-groups` แล้ว traffic จากนอก SG ถูกบล็อกจริง
+- [x] ผูก `security-groups` แล้ว traffic จากนอก SG ถูกบล็อกจริง
 - [ ] ลอง deny policy ด้วย user จริงหนึ่งคน — แก้ listener บน console ต้องขึ้น error สิทธิ์
 
 ## License
