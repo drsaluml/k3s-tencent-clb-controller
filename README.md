@@ -44,9 +44,14 @@ resync ทุก `--resync-period` (default 10 นาที) เพื่อด�
 
 ### Orphan GC
 
-CLB จะกลายเป็น orphan เมื่อ Service หายไปโดยที่ finalizer ไม่ได้ทำงาน — ลบตอน
-controller ดับ, ลบทั้ง namespace จน finalizer ถูก force ทิ้ง, หรือ `DeleteLoadBalancer`
-ล้มเหลวแล้วไม่มีใครกลับมาดู ทุกเคสจบเหมือนกันคือ CLB ที่ไม่มีใครใช้แต่ยังคิดเงิน
+CLB จะกลายเป็น orphan เมื่อ Service หายไปโดยที่ finalizer ไม่ได้ทำงาน — ลบทั้ง
+namespace จน finalizer ถูก force ทิ้ง, ถอน finalizer ด้วยมือ, restore etcd จาก
+backup ย้อนหลัง, หรือ `DeleteLoadBalancer` ล้มเหลวแล้วไม่มีใครกลับมาดู
+ทุกเคสจบเหมือนกันคือ CLB ที่ไม่มีใครใช้แต่ยังคิดเงิน
+
+> **"ลบตอน controller ดับ" ไม่ทำให้เกิด orphan** — เคยเขียนไว้ผิดตรงนี้ ถ้า
+> controller ดับ finalizer จะบล็อกการลบไว้เอง Service ค้าง `Terminating` ไม่หลุด
+> จาก etcd จนกว่า controller จะกลับมาเก็บกวาด เคสที่เหลือจึงต้อง**มีคนไปฝืน**ทั้งหมด
 
 ตัวเก็บกวาดเดินทุก `--orphan-gc-interval` (default 1 ชั่วโมง) เทียบ CLB ที่ติด tag
 ของคลัสเตอร์นี้กับ Service ที่มีอยู่จริง
@@ -68,6 +73,33 @@ controller ดับ, ลบทั้ง namespace จน finalizer ถูก fo
 
 > CLB ที่ adopt มาด้วย `existing-loadbalancer-id` ไม่เคยถูกติด tag ของเรา
 > GC จึงมองไม่เห็นตั้งแต่แรก
+
+#### คลัสเตอร์ th1 ตั้งใจไม่เปิด `--orphan-gc-delete` (2026-08-10)
+
+ตัดสินใจแล้ว ไม่ต้องเสนอซ้ำ เหตุผล:
+
+- **โอกาสเกิด orphan ใกล้ศูนย์** เมื่อรู้แล้วว่า controller ดับไม่ทำให้เกิด (ดูกล่อง
+  ด้านบน) เคสที่เหลือต้องมีคนไป force ลบ namespace หรือถอน finalizer เอง
+  ซึ่งไม่ใช่กิจวัตรของคลัสเตอร์นี้ และ controller ดูแล CLB อยู่ตัวเดียว
+- **ความเสียหายสองฝั่งคนละสเกล** — ไม่เปิดแล้วเกิด orphan = มีบิลค้างที่มองเห็นและ
+  ลบทีหลังได้ ส่วนเปิดแล้ว logic พลาด = CLB ของ Traefik หาย เว็บล่ม hostname
+  เปลี่ยน ต้องไปแก้ origin บน Cloudflare เอง `rollout restart` กู้ไม่ได้
+- **path ที่ไปลบจริงยังไม่เคยถูกเดินผ่านเลย** — ทดสอบ report-only ผ่านไม่ได้แปลว่า
+  ตัวลบใช้ได้ ตรงกับหลักในไฟล์นี้ที่ว่าอย่าติ๊กว่าใช้ได้ถ้ายังไม่เคยยิงของจริง
+- **delete protection ไม่ช่วย** — `orphan.go` ปิด protection ให้เองก่อนลบ
+  ชั้นป้องกันที่คิดว่ามีอยู่ ไม่มีผลกับ path นี้
+
+ใช้ **การกวาดด้วย tag แทนการอ่าน log** ยิงทีเดียวได้คำตอบตรงจากคลาวด์ ไม่ต้องรอ
+ticker ครบรอบ และไม่ต้องพึ่ง log ที่ไม่มีใครอ่าน — รันเดือนละครั้งหรือตอนสงสัยก็พอ
+
+```bash
+# ต้องได้ CLB ของ Traefik ตัวเดียว เจอมากกว่านั้นแปลว่ามี orphan
+DescribeLoadBalancers '{"Filters":[{"Name":"tag:k8s-managed-by",
+                        "Values":["k3s-tencent-clb-controller"]}],"Limit":100}'
+```
+
+จะทบทวนใหม่เมื่อมีคลัสเตอร์เพิ่ม มี Service type LoadBalancer หลายตัว หรือเริ่มมี
+namespace churn แบบอัตโนมัติ
 
 ## ตัวอย่าง Service
 
@@ -133,7 +165,8 @@ in-memory fake)
 | ถอน finalizer ตอนลบ Service | ผ่านบน v0.2.10 — `releasing finalizer` ครั้งเดียว ไม่มี conflict ไม่มี error (ก่อนแก้เจอ 3/3 ครั้ง) ลบจบใน 17 วิ |
 | ลบ image เก่าบน GHCR อัตโนมัติ | ผ่าน — รอบจริงรอบแรกบน v0.2.10 ลบ `0.2.1`–`0.2.4` และ `:latest` ยังมี child ครบ 4 ตัว pull ได้ปกติ **แต่เหลือ 6 เวอร์ชันไม่ใช่ 5** ดูหมายเหตุใต้ตาราง |
 | kill leader ระหว่างสร้าง CLB | ผ่าน — pod ตายหลัง `CreateLoadBalancer` สำเร็จแต่ก่อนเขียน id ลง Service (`SyncLoadBalancerFailed: recording load balancer id on service: context canceled`) ตัวใหม่ค้นเจอด้วย tag แล้ว adopt ต่อ ไม่ได้สร้างซ้ำ |
-| orphan GC (report-only) | ผ่าน — รอบแรกบน v0.2.8 ได้ `sweep finished owned=1 watching=0 orphaned=0 deleted=0` ตรงกับที่เทียบกับ `DescribeLoadBalancers` เอง (CLB ที่ tag ไว้ตัวเดียว Service ยังอยู่) ยังไม่เคยรันในโหมดลบจริง |
+| orphan GC (report-only) | ผ่าน — รอบแรกบน v0.2.8 ได้ `sweep finished owned=1 watching=0 orphaned=0 deleted=0` ตรงกับที่เทียบกับ `DescribeLoadBalancers` เอง (CLB ที่ tag ไว้ตัวเดียว Service ยังอยู่) |
+| orphan GC (โหมดลบจริง) | **ไม่ทดสอบ ตั้งใจข้าม** — คลัสเตอร์นี้ไม่เปิด `--orphan-gc-delete` ดูเหตุผลใต้หัวข้อ Orphan GC |
 | `IPV6FullChain` | **บัญชีนี้ไม่รองรับ** — `Uin ... do not support create IPv6 full chain loadbalancer` ต้องขอเปิดกับ Tencent |
 | CAM deny policy กันแก้จาก console | **ไม่ทดสอบ ตั้งใจข้าม** — ดู "ทำไมไม่ใช้ deny policy" ด้านล่าง |
 
@@ -575,7 +608,9 @@ internal/controller/ reconciler
       จึงแยกออกจาก production ได้สนิท — target ของ `lb-f9k04p2q` ไม่ขยับแม้แต่ตัวเดียว
 - [x] ลบ listener ทิ้งบน console แล้ว controller สร้างคืนภายใน resync period
       (2026-08-10 ลบผ่าน API บน CLB ของ smoke test สร้างคืนใน 578 วิ)
-- [x] ลบ Service แล้ว CLB หายจริง ไม่เหลือค้าง (smoke-test 2026-08-09)
+- [x] ลบ Service แล้ว CLB หายจริง ไม่เหลือค้าง (smoke-test 2026-08-09
+      และซ้ำอีกครั้ง 2026-08-10 — ลบ namespace + Service จบใน 16 วิ แล้วกวาดด้วย
+      tag `k8s-managed-by` ทั้ง account เหลือ CLB ของ Traefik ตัวเดียว)
 - [x] kill pod controller ระหว่างสร้าง CLB แล้ว restart — ต้องไม่ได้ CLB สองตัว
       (2026-08-10 ดูตารางยืนยันด้านบน)
 - [x] ผูก `security-groups` แล้ว traffic จากนอก SG ถูกบล็อกจริง
